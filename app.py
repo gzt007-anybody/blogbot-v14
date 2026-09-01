@@ -49,7 +49,7 @@ with st.sidebar:
     model = st.selectbox(
         "AI 모델",
         [
-            "gpt-5.6-luna",
+            "gpt-5.6",
             "gpt-5.6",
             "gpt-4.1-mini",
         ],
