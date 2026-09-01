@@ -1,123 +1,362 @@
+import os
+import json
+import re
 import streamlit as st
-
 from openai import OpenAI
 
+# ---------------------------------------------------------
+# AI 시사편집국 V1.4
+# V1.3의 화면/생성 항목을 유지하면서 API 설정을 안정화한 버전
+# ---------------------------------------------------------
+
 st.set_page_config(
-
-    page_title="BlogBot",
-
+    page_title="AI 시사편집국 V1.4",
     page_icon="📰",
-
-    layout="wide"
-
+    layout="wide",
 )
 
-st.title("📰 BlogBot")
+st.title("📰 AI 시사편집국 V1.4")
+st.caption("편집기가 아니라, 주제와 제목을 입력하면 AI가 새 시사 블로그 기사를 작성합니다.")
 
-st.subheader("AI 기사 작성 도우미")
+# ---------------------------------------------------------
+# API 설정
+# Streamlit Cloud에서는 Settings → Secrets의 OPENAI_API_KEY를 우선 사용
+# ---------------------------------------------------------
+secret_key = ""
+try:
+    secret_key = st.secrets.get("OPENAI_API_KEY", "")
+except Exception:
+    secret_key = ""
 
-st.write("기사 주제와 원하는 방향을 입력하면 기사 초안을 만들어드립니다.")
+env_key = os.getenv("OPENAI_API_KEY", "")
+default_key = secret_key or env_key
 
-topic = st.text_input(
+with st.sidebar:
+    st.header("⚙️ 설정")
 
-    "기사 주제",
+    if default_key:
+        st.success("✅ OpenAI API 키가 연결되어 있습니다.")
+        api_key = default_key
+    else:
+        st.warning("⚠️ OpenAI API 키가 연결되지 않았습니다.")
+        api_key = st.text_input(
+            "OPENAI API Key",
+            value="",
+            type="password",
+            help="Streamlit Cloud에서는 Secrets에 OPENAI_API_KEY를 넣는 방법을 권장합니다.",
+        )
 
-    placeholder="예: 배달앱 무료배달이 자영업자에게 미치는 영향"
+    model = st.selectbox(
+        "AI 모델",
+        [
+            "gpt-5.6-luna",
+            "gpt-5.6",
+            "gpt-4.1-mini",
+        ],
+        index=0,
+    )
 
+    st.info("Streamlit Cloud에서는 API 키를 화면에 입력하기보다 Secrets에 저장하는 것을 권장합니다.")
+
+# ---------------------------------------------------------
+# ① 기사 생성 정보
+# ---------------------------------------------------------
+st.subheader("① 기사 생성 정보")
+
+a, b = st.columns([2, 1])
+
+with a:
+    topic = st.text_input(
+        "기사 주제 *",
+        placeholder="예: 대법관 서면 제청 논란",
+    )
+
+with b:
+    blog_title = st.text_input(
+        "블로그 제목",
+        placeholder="직접 입력하면 이 제목을 우선 사용",
+    )
+
+c, d = st.columns(2)
+
+with c:
+    perspective = st.selectbox(
+        "분석 관점",
+        [
+            "중립적 비교",
+            "보수적 가치 기준",
+            "진보적 가치 기준",
+            "경제·시장 관점",
+            "소비자 관점",
+            "자영업자 관점",
+        ],
+    )
+
+with d:
+    length = st.selectbox(
+        "본문 분량",
+        [
+            "1,500~2,000자",
+            "2,000~3,000자",
+            "3,000~4,000자",
+        ],
+        index=1,
+    )
+
+# ---------------------------------------------------------
+# ② 참고 자료
+# ---------------------------------------------------------
+reference = st.text_area(
+    "② 참고 자료/기사 URL/핵심 사실 (선택)",
+    height=180,
+    placeholder="기사 URL 또는 핵심 사실을 넣으세요. 원문을 단순 편집하는 기능이 아니라 AI가 새 글을 구성합니다.",
 )
 
-direction = st.text_area(
+# ---------------------------------------------------------
+# ③ 생성 항목
+# ---------------------------------------------------------
+st.subheader("③ 생성 항목")
+st.caption("기본 항목 외에도 이번 기사에만 적용할 생성 기준을 기사 생성 전에 추가할 수 있습니다.")
 
-    "기사 작성 방향",
-
-    placeholder="예: 자영업자 입장에서 문제점과 해결책을 중심으로 작성"
-
+custom_criteria = st.text_area(
+    "➕ 추가 생성 기준 / 작성 지침",
+    height=120,
+    placeholder=(
+        "예:\n"
+        "- 찬반 양쪽 주장을 같은 비중으로 다룰 것\n"
+        "- 법률상 쟁점과 정치적 쟁점을 분리할 것\n"
+        "- 자영업자에게 미치는 영향을 별도 문단으로 분석할 것\n"
+        "- 독자가 이해하기 쉬운 사례를 1개 포함할 것"
+    ),
 )
 
-length = st.selectbox(
-
-    "기사 분량",
-
-    ["1,500자", "2,000자", "3,000자", "5,000자"]
-
+custom_sections = st.text_input(
+    "➕ 추가로 만들 기사 항목 (선택)",
+    placeholder="예: 독자에게 던지는 질문, 정책 대안 3가지, 핵심 숫자 정리",
 )
 
-if st.button("📝 기사 작성하기", type="primary"):
+keys = [
+    ("title", "제목 후보 5개"),
+    ("summary", "한눈에 보는 핵심"),
+    ("facts", "사실관계·타임라인"),
+    ("factcheck", "팩트체크 표"),
+    ("media", "언론 관점 비교표"),
+    ("proscons", "찬성·반대 논리표"),
+    ("analysis", "선택 관점 분석"),
+    ("counter", "반론·한계"),
+    ("blog", "네이버 블로그 본문"),
+    ("conclusion", "핵심 결론 3문장"),
+    ("thumbnail", "썸네일 문구 5개"),
+    ("hashtags", "해시태그 10개"),
+    ("sources", "출처 목록"),
+]
 
-    if not topic:
+checks = {}
+cc = st.columns(4)
 
-        st.warning("기사 주제를 입력해주세요.")
+for i, (k, label) in enumerate(keys):
+    with cc[i % 4]:
+        checks[k] = st.checkbox(label, True)
 
-        st.stop()
+# ---------------------------------------------------------
+# JSON 복구 보조 함수
+# ---------------------------------------------------------
+def extract_json(text: str):
+    text = text.strip()
+
+    # ```json ... ``` 제거
+    text = re.sub(
+        r"^```(?:json)?\s*|\s*```$",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    ).strip()
 
     try:
+        return json.loads(text)
+    except json.JSONDecodeError:
+        pass
 
-        client = OpenAI(api_key=st.secrets["OPENAI_API_KEY"])
+    # 앞뒤에 설명이 붙은 경우 첫 JSON 객체를 찾아 복구
+    start = text.find("{")
+    end = text.rfind("}")
 
-        prompt = f"""
+    if start >= 0 and end > start:
+        candidate = text[start:end + 1]
+        return json.loads(candidate)
 
-당신은 한국의 시사·경제 전문 기자입니다.
+    raise ValueError("AI 응답에서 JSON 결과를 찾지 못했습니다.")
 
-다음 주제로 네이버 블로그에 게시할 수 있는
+# ---------------------------------------------------------
+# 기사 생성
+# ---------------------------------------------------------
+if st.button("🚀 AI 기사 새로 생성", type="primary", use_container_width=True):
 
-완성도 높은 기사 초안을 작성해주세요.
+    if not api_key or not api_key.strip():
+        st.error("OPENAI API Key가 연결되지 않았습니다. Streamlit Cloud Secrets를 확인해주세요.")
+        st.stop()
 
-[기사 주제]
+    if not topic.strip():
+        st.error("기사 주제를 입력해주세요.")
+        st.stop()
 
-{topic}
+    requested = [k for k, value in checks.items() if value]
 
-[작성 방향]
+    if custom_sections.strip():
+        custom_list = [
+            x.strip()
+            for x in re.split(r"[,\n]", custom_sections)
+            if x.strip()
+        ]
+    else:
+        custom_list = []
 
-{direction}
+    prompt = f"""
+기사 주제: {topic}
+사용자가 지정한 블로그 제목: {blog_title or '(직접 지정 없음)'}
+분석 관점: {perspective}
+본문 분량: {length}
+참고 자료: {reference or '(없음)'}
 
-[분량]
+기본 생성 항목: {requested}
 
-약 {length}
+사용자가 추가한 생성 기준:
+{custom_criteria or '(없음)'}
 
-작성 원칙:
+사용자가 추가한 추가 기사 항목:
+{custom_sections or '(없음)'}
 
-1. 제목을 먼저 작성합니다.
+다음 항목을 생성하세요:
+{requested}
 
-2. 독자의 관심을 끌 수 있는 부제목을 작성합니다.
+추가 기사 항목이 있다면 각각 별도의 결과 필드로 생성하세요.
+필드명은 의미가 명확한 영문 snake_case로 정하세요.
 
-3. 서론-본론-결론 구조로 작성합니다.
-
-4. 사실과 의견을 구분해서 표현합니다.
-
-5. 특정 정치세력이나 정당을 일방적으로 비난하지 않습니다.
-
-6. 서로 다른 입장을 균형 있게 설명합니다.
-
-7. 이해하기 쉬운 한국어를 사용합니다.
-
-8. 네이버 블로그에 바로 활용할 수 있는 문체로 작성합니다.
-
-9. 필요한 경우 비교표를 포함합니다.
-
-10. 마지막에는 핵심 내용을 정리합니다.
-
-기사만 작성하고 불필요한 설명은 하지 마세요.
-
+반드시 지킬 규칙:
+- 기사 편집/요약이 아니라 새로운 블로그 기사로 재구성.
+- 사실, 보도상 주장, 해석, 제언을 구분.
+- 확인되지 않은 사실은 [확인 필요].
+- 제공되지 않은 구체적 사실을 지어내지 않음.
+- 언론사의 정치적 성향을 단정하지 말고 실제 기사 프레임을 비교.
+- 법률 문제는 헌법/법률 조문과 법조계 해석을 구분.
+- 표는 markdown 표로 작성.
+- 네이버 블로그 본문은 읽기 쉬운 기사체.
+- 참고 URL이 제공된 경우 해당 자료를 우선 확인.
+- 결과는 JSON 객체 하나만 반환.
 """
 
-        with st.spinner("기사를 작성하고 있습니다..."):
+    system = """
+당신은 한국어 시사 블로그 전문 편집장이다.
+사실 검증과 출처 구분을 최우선으로 한다.
+사용자가 제목을 입력했다면 제목 후보 중 첫 번째는 그 제목을 우선 반영한다.
+최신 정보가 필요한 경우 웹 검색을 활용한다.
+정치적 사안에서도 사실과 의견을 구분하고 서로 다른 관점을 공정하게 설명한다.
+"""
 
-            response = client.responses.create(
+    try:
+        client = OpenAI(api_key=api_key.strip())
 
-                model="gpt-5",
+        with st.spinner("AI가 최신 자료와 입력 내용을 바탕으로 새 기사를 생성하는 중입니다..."):
 
-                input=prompt
+            # 현재 Responses API의 웹 검색 도구 사용
+            try:
+                response = client.responses.create(
+                    model=model,
+                    instructions=system,
+                    input=prompt,
+                    tools=[{"type": "web_search"}],
+                )
+            except Exception as web_error:
+                # 웹 검색 도구 문제일 경우 일반 생성으로 한 번 더 시도
+                web_msg = str(web_error).lower()
+                if "web_search" in web_msg or "tool" in web_msg:
+                    response = client.responses.create(
+                        model=model,
+                        instructions=system,
+                        input=prompt,
+                    )
+                else:
+                    raise
 
-            )
+        result = extract_json(response.output_text)
 
-        st.success("기사 작성이 완료되었습니다.")
+        st.session_state.result = result
+        st.session_state.custom_labels = {
+            re.sub(r"[^0-9A-Za-z가-힣]+", "_", x).strip("_").lower(): x
+            for x in custom_list
+        }
 
-        st.markdown("## 📰 작성된 기사")
-
-        st.markdown(response.output_text)
+        st.success("✅ 기사 생성 완료")
 
     except Exception as e:
+        msg = str(e)
 
-        st.error("기사 작성 중 오류가 발생했습니다.")
+        if "429" in msg or "insufficient_quota" in msg:
+            st.error(
+                "429 / insufficient_quota: "
+                "API 키 자체의 형식 문제보다 사용한도·크레딧·프로젝트 결제 설정 문제일 수 있습니다."
+            )
+        elif "401" in msg or "invalid_api_key" in msg.lower():
+            st.error("❌ OpenAI API 키가 유효하지 않습니다. Streamlit Cloud Secrets의 키를 확인해주세요.")
+        else:
+            st.error("생성 오류: " + msg)
 
-        st.error(str(e))
+# ---------------------------------------------------------
+# 결과 표시
+# ---------------------------------------------------------
+if "result" in st.session_state:
+    st.divider()
+    st.subheader("📄 AI 생성 기사")
+
+    result = st.session_state.result
+    labels = dict(keys)
+    labels.update(st.session_state.get("custom_labels", {}))
+
+    full = []
+
+    for k, _ in keys:
+        if k not in result:
+            continue
+
+        st.markdown("### " + labels[k])
+        value = result[k]
+
+        if isinstance(value, list) and value and isinstance(value[0], dict):
+            cols = list(value[0].keys())
+
+            md = (
+                "| " + " | ".join(cols) + " |\n"
+                "| " + " | ".join(["---"] * len(cols)) + " |\n"
+            )
+
+            for row in value:
+                md += (
+                    "| "
+                    + " | ".join(
+                        str(row.get(x, ""))
+                        .replace("|", "｜")
+                        .replace("\n", " ")
+                        for x in cols
+                    )
+                    + " |\n"
+                )
+
+            st.markdown(md)
+            full.append(md)
+
+        elif isinstance(value, list):
+            txt = "\n".join("- " + str(x) for x in value)
+            st.markdown(txt)
+            full.append(txt)
+
+        else:
+            text = str(value)
+            st.markdown(text)
+            full.append(text)
+
+    st.download_button(
+        "⬇️ 결과 TXT 저장",
+        "\n\n".join(full),
+        "AI_시사편집국_기사.txt",
+        "text/plain",
+    )
