@@ -354,6 +354,69 @@ if "result" in st.session_state:
             st.markdown(text)
             full.append(text)
 
+    # ---------------------------------------------
+    # 네이버 블로그 복사
+    # ---------------------------------------------
+    blog_text = "\n\n".join(full)
+    st.markdown("---")
+    st.subheader("📋 네이버 블로그용")
+    st.text_area(
+        "복사할 기사",
+        value=blog_text,
+        height=300,
+        key="blog_copy_text"
+    )
+    import streamlit.components.v1 as components
+    components.html(
+        f"""
+        <script>
+        function copyBlogText() {{
+            const text = {json.dumps(blog_text, ensure_ascii=False)}
+            // 최신 브라우저/아이패드 우선
+            if (navigator.clipboard && window.isSecureContext) {{
+                navigator.clipboard.writeText(text).then(function() {{
+                    alert("✅ 기사가 복사되었습니다.\\n네이버 블로그에서 붙여넣기 하세요.");
+                }}).catch(function() {{
+                    fallbackCopy(text);
+                }});
+            }} else {{
+                fallbackCopy(text);
+            }}
+        }}
+        function fallbackCopy(text) {{
+            const textarea = document.createElement("textarea");
+            textarea.value = text;
+            textarea.style.position = "fixed";
+            textarea.style.left = "-9999px";
+            document.body.appendChild(textarea);
+            textarea.focus();
+            textarea.select();
+            try {{
+                document.execCommand("copy");
+                alert("✅ 기사가 복사되었습니다.\\n네이버 블로그에서 붙여넣기 하세요.");
+            }} catch (e) {{
+                alert("⚠️ 자동 복사가 되지 않았습니다.\\n위의 기사 내용을 길게 눌러 복사해주세요.");
+            }}
+            document.body.removeChild(textarea);
+        }}
+        </script>
+        <button
+            onclick="copyBlogText()"
+            style="
+                width:100%;
+                padding:14px;
+                font-size:18px;
+                font-weight:bold;
+                border:none;
+                border-radius:8px;
+                cursor:pointer;
+            "
+        >
+            📋 네이버 블로그 복사
+        </button>
+        """,
+        height=70,
+    )
     st.download_button(
         "⬇️ 결과 TXT 저장",
         "\n\n".join(full),
