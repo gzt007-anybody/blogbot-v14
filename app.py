@@ -1,6 +1,7 @@
 import os
 import json
 import re
+import html
 import streamlit as st
 from openai import OpenAI
 
@@ -440,7 +441,26 @@ if "result" in st.session_state:
                 html.append("<h1>" + line[2:] + "</h1>")
 
             elif line:
-                html.append("<p>" + line + "</p>")
+                # HTML 특수문자 보호
+                safe_line = html.escape(line)
+
+                # Markdown 링크:
+                # [기사 제목](https://example.com)
+                safe_line = re.sub(
+                    r'\[([^\]]+)\]\((https?://[^\s\)]+)\)',
+                    r'<a href="\2" target="_blank" rel="noopener noreferrer">\1</a>',
+                    safe_line
+                )
+
+                # 일반 URL:
+                # https://example.com
+                safe_line = re.sub(
+                    r'(?<!["=])(https?://[^\s<]+)',
+                    r'<a href="\1" target="_blank" rel="noopener noreferrer">\1</a>',
+                    safe_line
+                )
+
+                html.append("<p>" + safe_line + "</p>")
 
             i += 1
 
