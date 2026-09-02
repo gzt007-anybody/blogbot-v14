@@ -383,14 +383,14 @@ if "result" in st.session_state:
 
                 i += 2
 
-                html.append(
+                result_html.append(
                     "<table style='border-collapse:collapse;width:100%;'>"
                 )
 
-                html.append("<tr>")
+                result_html.append("<tr>")
 
                 for h in headers:
-                    html.append(
+                    result_html.append(
                         "<th style='"
                         "border:1px solid #999;"
                         "padding:8px;"
@@ -401,7 +401,7 @@ if "result" in st.session_state:
                         "</th>"
                     )
 
-                html.append("</tr>")
+                result_html.append("</tr>")
 
                 while i < len(lines) and "|" in lines[i]:
                     cells = [
@@ -409,10 +409,10 @@ if "result" in st.session_state:
                         for x in lines[i].strip("|").split("|")
                     ]
 
-                    html.append("<tr>")
+                    result_html.append("<tr>")
 
                     for cell in cells:
-                        html.append(
+                        result_html.append(
                             "<td style='"
                             "border:1px solid #999;"
                             "padding:8px;"
@@ -421,24 +421,24 @@ if "result" in st.session_state:
                             "</td>"
                         )
 
-                    html.append("</tr>")
+                    result_html.append("</tr>")
 
                     i += 1
 
-                html.append("</table><br>")
+                result_html.append("</table><br>")
                 continue
 
             # -------------------------
             # 제목
             # -------------------------
             if line.startswith("### "):
-                html.append("<h3>" + line[4:] + "</h3>")
+                result_html.append("<h3>" + line[4:] + "</h3>")
 
             elif line.startswith("## "):
-                html.append("<h2>" + line[3:] + "</h2>")
+                result_html.append("<h2>" + line[3:] + "</h2>")
 
             elif line.startswith("# "):
-                html.append("<h1>" + line[2:] + "</h1>")
+                result_html.append("<h1>" + line[2:] + "</h1>")
 
             elif line:
                 # HTML 특수문자 보호
@@ -460,11 +460,11 @@ if "result" in st.session_state:
                     safe_line
                 )
 
-                html.append("<p>" + safe_line + "</p>")
+                result_html.append("<p>" + safe_line + "</p>")
 
             i += 1
 
-        return "".join(html)
+        return "".join(result_html)
 
 
     blog_html = markdown_to_html(blog_text)
