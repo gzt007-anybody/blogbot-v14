@@ -353,70 +353,124 @@ if "result" in st.session_state:
             text = str(value)
             st.markdown(text)
             full.append(text)
-
     # ---------------------------------------------
-    # 네이버 블로그 복사
+    # 네이버 블로그 복사 - 서식/표 유지 버전
     # ---------------------------------------------
     blog_text = "\n\n".join(full)
+    # Markdown 표를 HTML 표로 변환
+    def markdown_to_html(text):
+        lines = text.splitlines()
+        html = []
+        i = 0
+        while i < len(lines):
+            line = lines[i].strip()
+            # 표 시작
+            if (
+                i + 1 < len(lines)
+                and "|" in line
+                and "|" in lines[i + 1]
+                and "---" in lines[i + 1]
+            ):
+                headers = [x.strip() for x in line.strip("|").split("|")]
+                i += 2
+                html.append("<table style='border-collapse:collapse;width:100%;'>")
+                html.append("<tr>")
+                for h in headers:
+                    html.append(
+                        f"<th style='border:1px solid #999;padding:8px;background:#f2f2f2;'>{h}</th>"
+                    )
+                html.append("</tr>")
+                while i < len(lines) and "|" in lines[i]:
+                    cells = [x.strip() for x in lines[i].strip("|").split("|")]
+                    html.append("<tr>")
+                    for cell in cells:
+                        html.append(
+                            f"<td style='border:1px solid #999;padding:8px;'>{cell}</td>"
+                        )
+                    html.append("</tr>")
+                    i += 1
+                html.append("</table><br>")
+                continue
+            # 제목
+            if line.startswith("### "):
+                html.append(f"<h3>{line[4:]}</h3>")
+            elif line.startswith("## "):
+                html.append(f"<h2>{line[3:]}</h2>")
+            elif line.startswith("# "):
+                html.append(f"<h1>{line[2:]}</h1>")
+            elif line:
+                html.append(f"<p>{line}</p>")
+            i += 1
+        return "".join(html)
+    blog_html = markdown_to_html(blog_text)
     st.markdown("---")
-    st.subheader("📋 네이버 블로그용")
-    st.text_area(
-        "복사할 기사",
-        value=blog_text,
-        height=300,
-        key="blog_copy_text"
-    )
+    st.subheader("📋 네이버 블로그용 복사")
     import streamlit.components.v1 as components
     components.html(
         f"""
-        <script>
-        function copyBlogText() {{
-            const text = {json.dumps(blog_text, ensure_ascii=False)}
-            // 최신 브라우저/아이패드 우선
-            if (navigator.clipboard && window.isSecureContext) {{
-                navigator.clipboard.writeText(text).then(function() {{
-                    alert("✅ 기사가 복사되었습니다.\\n네이버 블로그에서 붙여넣기 하세요.");
-                }}).catch(function() {{
-                    fallbackCopy(text);
-                }});
-            }} else {{
-                fallbackCopy(text);
-            }}
-        }}
-        function fallbackCopy(text) {{
-            const textarea = document.createElement("textarea");
-            textarea.value = text;
-            textarea.style.position = "fixed";
-            textarea.style.left = "-9999px";
-            document.body.appendChild(textarea);
-            textarea.focus();
-            textarea.select();
-            try {{
-                document.execCommand("copy");
-                alert("✅ 기사가 복사되었습니다.\\n네이버 블로그에서 붙여넣기 하세요.");
-            }} catch (e) {{
-                alert("⚠️ 자동 복사가 되지 않았습니다.\\n위의 기사 내용을 길게 눌러 복사해주세요.");
-            }}
-            document.body.removeChild(textarea);
-        }}
-        </script>
+        <div
+            id="blogContent"
+            contenteditable="true"
+            style="
+                padding:15px;
+                border:1px solid #ddd;
+                border-radius:8px;
+                background:white;
+                color:black;
+                font-size:16px;
+                line-height:1.7;
+            "
+        >
+            {blog_html}
+        </div>
         <button
-            onclick="copyBlogText()"
+            onclick="copyBlog()"
             style="
                 width:100%;
+                margin-top:12px;
                 padding:14px;
                 font-size:18px;
                 font-weight:bold;
-                border:none;
+                border:0;
                 border-radius:8px;
-                cursor:pointer;
+                background:#03c75a;
+                color:white;
             "
         >
             📋 네이버 블로그 복사
         </button>
+        <script>
+        async function copyBlog() {{
+            const el = document.getElementById("blogContent");
+            const range = document.createRange();
+            range.selectNodeContents(el);
+            const selection = window.getSelection();
+            selection.removeAllRanges();
+            selection.addRange(range);
+            try {{
+                const html = el.innerHTML;
+                const text = el.innerText;
+                const item = new ClipboardItem({{
+                    "text/html": new Blob([html], {{type: "text/html"}}),
+                    "text/plain": new Blob([text], {{type: "text/plain"}})
+                }});
+                await navigator.clipboard.write([item]);
+                alert("✅ 기사 전체가 복사되었습니다.\\n네이버 블로그에서 붙여넣기 하세요.");
+            }} catch (e) {{
+                try {{
+                    document.execCommand("copy");
+                    alert("✅ 기사가 복사되었습니다.");
+                }} catch (err) {{
+                    alert("⚠️ 자동 복사가 되지 않았습니다.\\n기사 영역을 길게 눌러 복사해주세요.");
+                }}
+            }}
+            selection.removeAllRanges();
+        }}
+        </script>
         """,
-        height=70,
+        height=500,
     )
+
     st.download_button(
         "⬇️ 결과 TXT 저장",
         "\n\n".join(full),
