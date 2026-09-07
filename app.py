@@ -471,6 +471,60 @@ if "result" in st.session_state:
 
     blog_html = markdown_to_html(blog_text)
 
+    st.markdown("### 📋 네이버 블로그용 복사 영역")
+    st.caption("아이패드에서는 아래 내용을 길게 눌러 전체 선택 → 복사한 뒤 네이버 블로그에 붙여넣으세요.")
+    st.markdown("### 📋 네이버 블로그용 복사 영역")
+    st.caption("아이패드에서는 아래 내용을 길게 눌러 전체 선택 → 복사한 뒤 네이버 블로그에 붙여넣으세요.")
+    copy_html = f"""
+    <div
+        contenteditable="true"
+        style="
+            border:1px solid #cccccc;
+            border-radius:10px;
+            padding:20px;
+            height:500px;
+            overflow-y:auto;
+            background:white;
+            font-size:17px;
+            line-height:1.8;
+            color:#222222;
+            -webkit-user-select:text;
+            user-select:text;
+        "
+    >
+    {blog_html}
+    </div>
+    """
+    st.components.v1.html(
+        copy_html,
+        height=550,
+        scrolling=True
+    )
+    copy_html = f"""
+    <div
+        contenteditable="true"
+        style="
+            border:1px solid #cccccc;
+            border-radius:10px;
+            padding:20px;
+            height:500px;
+            overflow-y:auto;
+            background:white;
+            font-size:17px;
+            line-height:1.8;
+            color:#222222;
+            -webkit-user-select:text;
+            user-select:text;
+        "
+    >
+    {blog_html}
+    </div>
+    """
+    st.components.v1.html(
+        copy_html,
+        height=550,
+        scrolling=True
+    )
 
     # =========================================================
     # 네이버 블로그 복사 화면
