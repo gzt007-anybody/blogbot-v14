@@ -360,6 +360,8 @@ if "result" in st.session_state:
 
     blog_text = "\n\n".join(full)
     def markdown_to_html(text):
+        result_html = []
+        
         lines = text.splitlines()
         html = []
         i = 0
