@@ -10,7 +10,7 @@ st.caption("편집기가 아니라, 주제와 제목을 입력하면 AI가 새 �
 with st.sidebar:
     st.header("⚙️ 설정")
     api_key = st.text_input("OPENAI API Key", value=os.getenv("OPENAI_API_KEY",""), type="password")
-    model = st.selectbox("AI 모델", ["gpt-5","gpt-5-mini","gpt-4.1-mini"], index=0)
+    model = st.selectbox("AI 모델", ["gpt-5.6","gpt-5-mini","gpt-4.1-mini"], index=0)
     st.info("API 키는 프로그램에 저장하지 않습니다.")
 
 st.subheader("① 기사 생성 정보")
