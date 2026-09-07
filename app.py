@@ -53,32 +53,46 @@ for i,(k,l) in enumerate(keys):
 
 
 # ---------------------------------------------------------
-# 네이버 블로그용 Markdown -> HTML 변환
-# 외부 markdown 패키지 없이 동작하도록 앱 내부에서 처리합니다.
+# 네이버 블로그용 Markdown -> HTML / Plain Text 변환
+# iPad/Safari + 네이버 블로그 붙여넣기를 고려한 안정화 버전
 # ---------------------------------------------------------
 def _inline_md_to_html(text: str) -> str:
     import html
 
-    text = html.escape(str(text), quote=False)
+    src = str(text or "")
+    links = []
 
-    # Markdown 링크: [표시문자](https://주소)
-    text = re.sub(
-        r"\[([^\]]+)\]\((https?://[^\s)]+)\)",
-        lambda m: f'<a href="{html.escape(m.group(2), quote=True)}">{m.group(1)}</a>',
-        text,
+    # Markdown 링크를 먼저 임시 토큰으로 보관한 뒤 나머지 문자열을 escape.
+    # 이렇게 해야 URL의 &, ?, = 등이 이중 escape 되는 문제를 막을 수 있습니다.
+    def save_link(m):
+        label = m.group(1).strip()
+        url = m.group(2).strip()
+        token = f"@@NAVER_LINK_{len(links)}@@"
+        links.append((token, label, url))
+        return token
+
+    src = re.sub(r"\[([^\]]+)\]\((https?://[^\s)]+)\)", save_link, src)
+    src = html.escape(src, quote=False)
+
+    # 일반 URL은 클릭 가능한 링크로 변환
+    src = re.sub(
+        r"(?<![=\"'/>])(https?://[^\s<]+)",
+        lambda m: f'<a href="{html.escape(m.group(1), quote=True)}" target="_blank" rel="noopener noreferrer">{html.escape(m.group(1), quote=False)}</a>',
+        src,
     )
 
-    # 링크 밖의 일반 URL도 클릭 가능하게 변환
-    text = re.sub(
-        r'(?<![=\"\'/>])(https?://[^\s<]+)',
-        lambda m: f'<a href="{html.escape(m.group(1), quote=True)}">{m.group(1)}</a>',
-        text,
-    )
+    # 보관했던 Markdown 링크 복원
+    for token, label, url in links:
+        anchor = (
+            f'<a href="{html.escape(url, quote=True)}" target="_blank" '
+            f'rel="noopener noreferrer">{html.escape(label, quote=False)}</a>'
+        )
+        src = src.replace(token, anchor)
 
     # 기본 Markdown 강조
-    text = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", text)
-    text = re.sub(r"__(.+?)__", r"<strong>\1</strong>", text)
-    return text
+    src = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", src)
+    src = re.sub(r"__(.+?)__", r"<strong>\1</strong>", src)
+    return src
 
 
 def markdown_to_naver_html(markdown_text: str) -> str:
@@ -86,29 +100,24 @@ def markdown_to_naver_html(markdown_text: str) -> str:
     out = []
     i = 0
 
-    table_style = (
-        "border-collapse:collapse;width:100%;margin:14px 0;"
-        "font-size:15px;line-height:1.55;"
-    )
-    cell_style = "border:1px solid #d9d9d9;padding:8px 10px;vertical-align:top;"
+    table_style = "border-collapse:collapse;width:100%;margin:16px 0;font-size:15px;line-height:1.6;"
+    cell_style = "border:1px solid #d9d9d9;padding:9px 10px;vertical-align:top;"
     th_style = cell_style + "font-weight:700;background:#f5f5f5;"
 
     while i < len(lines):
-        raw = lines[i]
-        line = raw.strip()
+        line = lines[i].strip()
 
         if not line:
-            out.append('<p style="margin:8px 0;"><br></p>')
+            out.append('<p style="margin:7px 0;"><br></p>')
             i += 1
             continue
 
-        # Markdown 표 감지: 현재 줄 다음에 |---|---| 형태가 있으면 표로 변환
+        # Markdown 표
         if "|" in line and i + 1 < len(lines):
             sep = lines[i + 1].strip()
             if re.match(r"^\|?\s*:?-{3,}:?\s*(\|\s*:?-{3,}:?\s*)+\|?$", sep):
                 def split_row(row):
-                    row = row.strip().strip("|")
-                    return [c.strip() for c in row.split("|")]
+                    return [c.strip() for c in row.strip().strip("|").split("|")]
 
                 headers = split_row(line)
                 rows = []
@@ -123,8 +132,7 @@ def markdown_to_naver_html(markdown_text: str) -> str:
                 out.append(f'<table style="{table_style}">')
                 out.append("<thead><tr>" + "".join(
                     f'<th style="{th_style}">{_inline_md_to_html(h)}</th>' for h in headers
-                ) + "</tr></thead>")
-                out.append("<tbody>")
+                ) + "</tr></thead><tbody>")
                 for row in rows:
                     padded = row + [""] * max(0, len(headers) - len(row))
                     out.append("<tr>" + "".join(
@@ -140,7 +148,7 @@ def markdown_to_naver_html(markdown_text: str) -> str:
             level = min(len(m.group(1)) + 1, 5)
             sizes = {2: "24px", 3: "21px", 4: "18px", 5: "16px"}
             out.append(
-                f'<h{level} style="margin:20px 0 10px;font-size:{sizes[level]};line-height:1.4;">'
+                f'<h{level} style="margin:22px 0 10px;font-size:{sizes[level]};line-height:1.45;">'
                 f'{_inline_md_to_html(m.group(2))}</h{level}>'
             )
             i += 1
@@ -156,21 +164,19 @@ def markdown_to_naver_html(markdown_text: str) -> str:
                 items.append(lm.group(1))
                 i += 1
             out.append('<ul style="margin:10px 0;padding-left:24px;">')
-            out.extend(
-                f'<li style="margin:5px 0;">{_inline_md_to_html(x)}</li>' for x in items
-            )
+            out.extend(f'<li style="margin:6px 0;line-height:1.7;">{_inline_md_to_html(x)}</li>' for x in items)
             out.append("</ul>")
             continue
 
         # 구분선
         if re.match(r"^(-{3,}|\*{3,}|_{3,})$", line):
-            out.append('<hr style="border:0;border-top:1px solid #ddd;margin:18px 0;">')
+            out.append('<hr style="border:0;border-top:1px solid #ddd;margin:20px 0;">')
             i += 1
             continue
 
         # 일반 문단
         out.append(
-            '<p style="margin:9px 0;line-height:1.75;word-break:keep-all;">'
+            '<p style="margin:10px 0;line-height:1.8;word-break:keep-all;">'
             + _inline_md_to_html(line)
             + "</p>"
         )
@@ -179,11 +185,26 @@ def markdown_to_naver_html(markdown_text: str) -> str:
     return "\n".join(out)
 
 
+def markdown_to_naver_plaintext(markdown_text: str) -> str:
+    """HTML 서식이 막혀도 Markdown 문법이 그대로 노출되지 않도록 하는 안전한 폴백."""
+    text = str(markdown_text or "").replace("\r\n", "\n").replace("\r", "\n")
+
+    # [출처명](URL) -> 출처명 + URL. 네이버가 URL을 자동 링크화할 수 있게 bare URL을 유지.
+    text = re.sub(
+        r"\[([^\]]+)\]\((https?://[^\s)]+)\)",
+        lambda m: f"{m.group(1)}\n{m.group(2)}",
+        text,
+    )
+    text = re.sub(r"^#{1,6}\s*", "", text, flags=re.M)
+    text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
+    text = re.sub(r"__(.+?)__", r"\1", text)
+    return text.strip()
+
+
 def render_naver_copy_button(blog_text: str):
     blog_html = markdown_to_naver_html(blog_text)
-    plain_text = str(blog_text)
+    plain_text = markdown_to_naver_plaintext(blog_text)
 
-    # JSON 문자열로 안전하게 JavaScript에 전달
     js_html = json.dumps(blog_html, ensure_ascii=False)
     js_text = json.dumps(plain_text, ensure_ascii=False)
 
@@ -196,7 +217,7 @@ def render_naver_copy_button(blog_text: str):
           ">📋 네이버 블로그용 서식 복사</button>
           <div id="status" style="margin-top:8px;font-size:14px;text-align:center;"></div>
 
-          <div id="copySource" contenteditable="true" aria-hidden="true"
+          <div id="copySource" contenteditable="true"
                style="position:fixed;left:-10000px;top:0;width:900px;background:white;color:black;">
           </div>
         </div>
@@ -209,7 +230,7 @@ def render_naver_copy_button(blog_text: str):
         const source = document.getElementById('copySource');
         source.innerHTML = htmlContent;
 
-        function legacyRichCopy() {{
+        function richDomCopy() {{
           source.focus();
           const selection = window.getSelection();
           const range = document.createRange();
@@ -224,8 +245,16 @@ def render_naver_copy_button(blog_text: str):
         btn.addEventListener('click', async () => {{
           status.textContent = '복사 중...';
 
-          // 1순위: HTML + 일반텍스트를 함께 클립보드에 저장
-          // 지원 브라우저에서는 표와 링크가 가장 안정적으로 유지됩니다.
+          // iPad/Safari/네이버에서는 DOM을 실제로 선택하여 복사하는 방식이
+          // text/plain 우선 붙여넣기 문제를 줄이므로 가장 먼저 시도합니다.
+          try {{
+            if (richDomCopy()) {{
+              status.textContent = '✅ 서식 복사 완료 — 네이버 블로그에 붙여넣으세요.';
+              return;
+            }}
+          }} catch (err) {{}}
+
+          // Chromium 계열 등의 보조 방식
           try {{
             if (navigator.clipboard && window.ClipboardItem && navigator.clipboard.write) {{
               const item = new ClipboardItem({{
@@ -233,22 +262,19 @@ def render_naver_copy_button(blog_text: str):
                 'text/plain': new Blob([plainContent], {{type:'text/plain'}})
               }});
               await navigator.clipboard.write([item]);
-              status.textContent = '✅ 서식 복사 완료 — 네이버 블로그에 붙여넣으세요.';
-              return;
-            }}
-          }} catch (err) {{
-            // iPad/Safari 또는 iframe 권한 제한 시 아래 방식으로 자동 전환
-          }}
-
-          // 2순위: 실제 HTML DOM을 선택하여 복사 — iPad/Safari 호환용
-          try {{
-            if (legacyRichCopy()) {{
-              status.textContent = '✅ 서식 복사 완료 — 네이버 블로그에 붙여넣으세요.';
+              status.textContent = '✅ 복사 완료 — 네이버 블로그에 붙여넣으세요.';
               return;
             }}
           }} catch (err) {{}}
 
-          status.textContent = '❌ 자동 복사가 막혔습니다. 아래 미리보기 본문을 길게 눌러 복사해주세요.';
+          // 최후 폴백: Markdown이 아닌 정리된 일반 텍스트
+          try {{
+            await navigator.clipboard.writeText(plainContent);
+            status.textContent = '✅ 일반 텍스트로 복사 완료 — 링크 URL은 자동 인식됩니다.';
+            return;
+          }} catch (err) {{}}
+
+          status.textContent = '❌ 자동 복사가 차단되었습니다. 아래 미리보기에서 본문을 길게 눌러 복사해주세요.';
         }});
         </script>
         """,
@@ -292,6 +318,11 @@ if st.button("🚀 AI 기사 새로 생성", type="primary", use_container_width
 - 언론사의 정치적 성향을 단정하지 말고 실제 기사 프레임을 비교.
 - 법률 문제는 헌법/법률 조문과 법조계 해석을 구분.
 - 표는 markdown 표로 작성.
+- `blog` 필드는 요약본이 아니라 실제 게시할 최종 완성 기사여야 한다.
+- `blog`의 분량은 사용자가 선택한 본문 분량을 반드시 충족하고, facts/factcheck/media/proscons/analysis/counter의 핵심 내용을 빠짐없이 통합한다.
+- `blog` 안에도 필요한 비교표를 markdown 표 형식으로 포함한다.
+- 출처 링크는 반드시 `[출처명](https://...)` 형식으로 넣고, URL만 괄호 안에 중복 표기하지 않는다.
+- `blog`는 다른 생성 항목을 단순 요약하거나 축약하지 말고, 그 자체만 복사해도 완성된 네이버 블로그 기사여야 한다.
 - 네이버 블로그 본문은 읽기 쉬운 기사체.
 - 결과는 JSON 객체 하나만 반환.
 """
@@ -344,7 +375,7 @@ if "result" in st.session_state:
     if blog_text:
         st.divider()
         st.subheader("📋 네이버 블로그 게시용")
-        st.caption("표와 링크가 유지되도록 HTML 서식으로 복사합니다. iPad에서도 버튼을 한 번 누른 뒤 네이버 블로그에 바로 붙여넣으세요.")
+        st.caption("기사 본문 전체를 줄이지 않고 복사합니다. 표·제목·링크 서식을 우선 유지하며, iPad에서 서식 복사가 제한되면 Markdown 기호가 노출되지 않는 일반 텍스트로 자동 전환합니다.")
 
         blog_html = render_naver_copy_button(blog_text)
 
