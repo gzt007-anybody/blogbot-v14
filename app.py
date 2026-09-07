@@ -1,7 +1,7 @@
 import os
 import json
 import re
-import html
+import html as html_lib
 import streamlit as st
 from openai import OpenAI
 
@@ -442,7 +442,7 @@ if "result" in st.session_state:
 
             elif line:
                 # HTML 특수문자 보호
-                safe_line = html.escape(line)
+                safe_line = html_lib.escape(line)
 
                 # Markdown 링크:
                 # [기사 제목](https://example.com)
