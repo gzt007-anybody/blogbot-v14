@@ -4,6 +4,7 @@ from zoneinfo import ZoneInfo
 import streamlit as st
 import streamlit.components.v1 as components
 from openai import OpenAI
+from article_images import start_article_images, render_article_images
 
 st.set_page_config(page_title="AI 콘텐츠 스튜디오 V2.2", page_icon="📰", layout="wide")
 st.title("📰 AI 콘텐츠 스튜디오 V2.2")
@@ -28,6 +29,16 @@ with st.sidebar:
         st.error("❌ OPENAI_API_KEY가 연결되지 않았습니다. Streamlit Cloud Secrets를 확인해주세요.")
 
     model = st.selectbox("AI 모델", ["gpt-5.6", "gpt-5.6-terra", "gpt-5.6-luna"], index=0, help="gpt-5.6은 GPT-5.6 Sol 별칭입니다.")
+
+
+with st.sidebar:
+    st.subheader("🖼️ 글과 함께 이미지 만들기")
+    auto_article_images = st.checkbox("기사 작성 후 이미지 자동 생성", value=True)
+    article_image_count = st.selectbox("이미지 수", [3, 2], help="썸네일 1장 + 본문 이미지 1~2장")
+    article_image_quality_label = st.selectbox("이미지 품질", ["보통", "빠른 초안", "높음"])
+    article_image_quality = {"보통":"medium", "빠른 초안":"low", "높음":"high"}[article_image_quality_label]
+    article_image_guidance = st.text_area("이미지 요청 (선택)", placeholder="예: 유럽 중년 남성, 가을 거리, 자연스러운 코디")
+    st.caption("일반 기사·라이프 글에 적용됩니다. 이미지 API 비용이 추가되며 ChatGPT 구독과 별도입니다. 시간별 초안과 4컷 만화는 기존 설정을 따릅니다.")
 
 
 content_mode = st.radio(
@@ -967,6 +978,11 @@ if content_mode == "📰 뉴스·시사 콘텐츠":
             st.session_state.result=result
             st.session_state.custom_labels={re.sub(r"[^0-9A-Za-z가-힣]+","_",x).strip("_").lower():x for x in custom_list}
             st.success("기사 생성 완료")
+            st.session_state.pop("news_article_images", None)
+            if auto_article_images:
+                start_article_images("news", result, "뉴스·시사", api_key,
+                                     article_image_count, article_image_guidance, article_image_quality)
+
         except Exception as e:
             msg=str(e)
             if "429" in msg or "insufficient_quota" in msg:
@@ -978,6 +994,9 @@ if content_mode == "📰 뉴스·시사 콘텐츠":
         st.divider()
         st.subheader("📄 AI 생성 기사")
         result = st.session_state.result
+        render_article_images("news", result, "뉴스·시사", api_key,
+                              article_image_count, article_image_guidance, article_image_quality)
+
         labels = dict(keys)
         labels.update(st.session_state.get("custom_labels", {}))
 
@@ -1221,11 +1240,19 @@ JSON 객체 하나만 반환하세요:
             )
             st.session_state.life_result = life_result
             st.success("중년 남성 라이프 콘텐츠 생성 완료")
+            st.session_state.pop("life_article_images", None)
+            if auto_article_images:
+                start_article_images("life", life_result, "라이프", api_key,
+                                     article_image_count, article_image_guidance, article_image_quality)
+
         except Exception as e:
             st.error("생성 오류: " + str(e))
 
     if st.session_state.get("life_result"):
         life_result = st.session_state.life_result
+        render_article_images("life", life_result, "라이프", api_key,
+                              article_image_count, article_image_guidance, article_image_quality)
+
         naver_text = str(life_result.get("naver_blog", "")).strip()
         google_text = str(life_result.get("google_blog", "")).strip()
 
