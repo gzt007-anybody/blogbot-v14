@@ -280,7 +280,7 @@ def naver_plain_text(markdown_text: str) -> str:
         text,
     )
     # 제목/강조 마크만 제거. 내용은 삭제하지 않음.
-    text = re.sub(r"(?m)^\s{0,3}#{1,6}\s*", "", text)
+    text = re.sub(r"(?m)^[ \t]{0,3}#{1,6}[ \t]+", "", text)
     text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
     text = re.sub(r"__(.+?)__", r"\1", text)
     return text.strip()
@@ -371,6 +371,61 @@ def render_naver_copy_button(blog_text: str):
 
 def render_google_copy_button(blog_text: str):
     return render_rich_copy_button(blog_text, "📋 구글 블로그용 서식 복사", "서식 복사 완료 — 구글 블로그/웹 편집기에 붙여넣으세요.")
+
+
+def _normalize_hashtags(value):
+    """배열 또는 문자열 태그를 중복 없는 #태그로 정리한다."""
+    if isinstance(value, str):
+        value = re.split(r"[#＃,，;\s]+", value)
+    if not isinstance(value, list):
+        return []
+    tags = []
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        for part in re.split(r"[#＃,，;]+", item):
+            word = re.sub(r"[^\w가-힣]", "", part)
+            tag = "#" + word
+            if word and tag.casefold() not in {t.casefold() for t in tags}:
+                tags.append(tag)
+    return tags[:10]
+
+
+def _ensure_life_hashtags(client, result):
+    """생성 시에만 누락된 태그를 한 번 보완하며 본문은 보존한다."""
+    tags = _normalize_hashtags(result.get("hashtags"))
+    if len(tags) < 10:
+        try:
+            response = client.responses.create(
+                model=model,
+                instructions="주어진 본문에 직접 관련된 한국어 해시태그 10개를 중복 없이 만든다. "
+                             "각 태그는 #으로 시작하고 공백을 포함하지 않는다. "
+                             'JSON 객체 {"hashtags": ["#태그", ...]}만 반환한다.',
+                input=json.dumps({
+                    "naver_blog": str(result.get("naver_blog", ""))[:6000],
+                    "google_blog": str(result.get("google_blog", ""))[:6000],
+                    "existing_hashtags": tags,
+                }, ensure_ascii=False),
+            )
+            raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", response.output_text.strip(), flags=re.I)
+            repaired = json.loads(raw)
+            tags = _normalize_hashtags(tags + _normalize_hashtags(repaired.get("hashtags")))
+        except Exception:
+            st.warning("해시태그 보완에 실패했습니다. 생성된 본문은 유지합니다.")
+    result["hashtags"] = tags
+    if len(tags) < 10:
+        st.warning(f"해시태그가 {len(tags)}개 생성되었습니다. 게시 전 확인해주세요.")
+
+
+def _blog_with_hashtags(blog_text, hashtags):
+    text = str(blog_text or "").strip()
+    if not text:
+        return ""
+    existing = {t.casefold() for t in re.findall(r"[#＃](\w+)", text)}
+    missing = [t for t in _normalize_hashtags(hashtags) if t[1:].casefold() not in existing]
+    if missing:
+        text += "\n\n### 해시태그\n\n" + " ".join(missing)
+    return text
 
 
 def _prepend_hook_lines_to_blog(blog_text: str, hook_lines) -> str:
@@ -1185,6 +1240,7 @@ if content_mode == "🧔 중년 남성 라이프 콘텐츠":
 8. 제목은 클릭을 유도하되 선정적·과장된 표현을 피한다.
 9. 네이버와 구글 본문은 같은 주제를 다루되 단순 복제가 아니라 플랫폼에 맞게 독립적으로 구성한다.
 10. {channel_rule}
+11. 본문에 직접 관련된 해시태그 10개를 hashtags 배열에 반드시 작성한다. #으로 시작하고 공백·중복 없이 작성하며 본문에는 별도로 넣지 않는다.
 {safety_rule}
 
 [네이버용]
@@ -1211,6 +1267,7 @@ JSON 객체 하나만 반환하세요:
     "slug": "",
     "faq_titles": []
   }},
+  "hashtags": ["#주제태그1", "#주제태그2", "나머지를 포함하여 총 10개"],
   "thumbnail_copy": ["썸네일 문구1", "썸네일 문구2", "썸네일 문구3"],
   "image_prompt": "과장 없는 가로형 블로그 썸네일 이미지 설명",
   "source_notes": ["확인한 주요 출처 또는 참고할 공식 출처"]
@@ -1234,6 +1291,7 @@ JSON 객체 하나만 반환하세요:
                 lr = client.responses.create(**kwargs)
             life_raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", lr.output_text.strip(), flags=re.I)
             life_result = json.loads(life_raw)
+            _ensure_life_hashtags(client, life_result)
             life_result["naver_blog"] = _prepend_hook_lines_to_blog(
                 life_result.get("naver_blog", ""),
                 life_result.get("hook_lines", []),
@@ -1253,8 +1311,8 @@ JSON 객체 하나만 반환하세요:
         render_article_images("life", life_result, "라이프", api_key,
                               article_image_count, article_image_guidance, article_image_quality)
 
-        naver_text = str(life_result.get("naver_blog", "")).strip()
-        google_text = str(life_result.get("google_blog", "")).strip()
+        naver_text = _blog_with_hashtags(life_result.get("naver_blog", ""), life_result.get("hashtags"))
+        google_text = _blog_with_hashtags(life_result.get("google_blog", ""), life_result.get("hashtags"))
 
         st.divider()
         st.subheader("📄 중년 남성 라이프 콘텐츠 결과")
@@ -1263,7 +1321,7 @@ JSON 객체 하나만 반환하세요:
             st.markdown("### 제목 후보")
             st.markdown("\n".join(f"- {x}" for x in titles))
 
-        tab_n, tab_g, tab_extra = st.tabs(["🟢 네이버용", "🔵 구글용", "🎨 썸네일·출처"])
+        tab_n, tab_g, tab_extra = st.tabs(["🟢 네이버용", "🔵 구글용", "🎨 썸네일·태그·출처"])
         with tab_n:
             if naver_text:
                 st.markdown(naver_text)
@@ -1288,6 +1346,12 @@ JSON 객체 하나만 반환하세요:
                 st.info("구글 원고를 생성하지 않은 설정입니다.")
 
         with tab_extra:
+            st.markdown("### #️⃣ 해시태그")
+            tags = _normalize_hashtags(life_result.get("hashtags"))
+            if tags:
+                st.code(" ".join(tags), language=None)
+            else:
+                st.info("이 결과에는 해시태그가 없습니다. 수정 버전에서 콘텐츠를 새로 생성해주세요.")
             thumbs = life_result.get("thumbnail_copy", [])
             if thumbs:
                 st.markdown("### 썸네일 문구")
@@ -1741,6 +1805,7 @@ if content_mode == "🧔 중년 남성 라이프 콘텐츠":
 8. 존재하지 않는 전문가, 통계, 연구, 제품효과, URL을 만들지 않는다.
 9. 실제 자동 게시나 예약 게시는 하지 않는다. 게시 전 저장용 초안만 만든다.
 10. image_prompt는 과장 없는 가로형 블로그 썸네일 장면으로 작성한다.
+11. 각 슬롯에 본문과 직접 관련된 해시태그 10개를 hashtags 배열로 작성한다. #으로 시작하고 공백·중복 없이 작성하며 본문에는 별도로 넣지 않는다.
 {life_hourly_safety}
 
 JSON 객체 하나만 반환하세요:
@@ -1756,6 +1821,7 @@ JSON 객체 하나만 반환하세요:
       "naver_blog": "네이버 완성 본문 또는 빈 문자열",
       "google_blog": "구글 완성 본문 또는 빈 문자열",
       "google_seo": {{"meta_title":"", "meta_description":"", "focus_keyword":"", "related_keywords":[], "slug":"", "faq_titles":[]}},
+      "hashtags": ["#주제태그1", "#주제태그2", "나머지를 포함하여 총 10개"],
       "image_prompt": "가로형 썸네일 프롬프트"
     }}
   ]
@@ -1788,6 +1854,7 @@ JSON 객체 하나만 반환하세요:
                 draft["display_time"] = life_slot_specs[idx]["display_time"]
                 draft["required_order"] = life_slot_specs[idx]["required_order"]
                 draft["title"] = fixed_title
+                _ensure_life_hashtags(client, draft)
                 draft["naver_blog"] = _prepend_hook_lines_to_blog(
                     draft.get("naver_blog", ""),
                     draft.get("hook_lines", []),
@@ -1821,8 +1888,8 @@ JSON 객체 하나만 반환하세요:
             order = str(draft.get("required_order", "")).strip()
             angle = str(draft.get("angle", "")).strip()
             draft_title = str(draft.get("title", st.session_state.get("life_hourly_title_saved", ""))).strip()
-            naver_draft = str(draft.get("naver_blog", "")).strip()
-            google_draft = str(draft.get("google_blog", "")).strip()
+            naver_draft = _blog_with_hashtags(draft.get("naver_blog", ""), draft.get("hashtags"))
+            google_draft = _blog_with_hashtags(draft.get("google_blog", ""), draft.get("hashtags"))
             seo = draft.get("google_seo", {})
 
             with st.expander(f"🕐 {slot_time} 라이프 초안 {i}", expanded=(i == 1)):
