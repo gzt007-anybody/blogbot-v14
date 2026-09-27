@@ -39,7 +39,7 @@ with st.sidebar:
     article_image_quality_label = st.selectbox("이미지 품질", ["보통", "빠른 초안", "높음"])
     article_image_quality = {"보통":"medium", "빠른 초안":"low", "높음":"high"}[article_image_quality_label]
     article_image_guidance = st.text_area("이미지 요청 (선택)", placeholder="예: 유럽 중년 남성, 가을 거리, 자연스러운 코디")
-    st.caption("일반 기사·라이프 글에 적용됩니다. 글 1건에 이미지 API를 7~8회 호출합니다. 이미지 API 비용이 추가되며 ChatGPT 구독과 별도입니다. 시간별 초안과 4컷 만화는 기존 설정을 따릅니다.")
+    st.caption("일반 기사·라이프 글에 적용됩니다. 글 1건에 이미지 생성과 주제 일치 확인을 각 최대 7~8회 요청합니다. 일치 확인에 실패하면 중단합니다. 이미지 API 비용이 추가되며 ChatGPT 구독과 별도입니다. 시간별 초안과 4컷 만화는 기존 설정을 따릅니다.")
 
 
 content_mode = st.radio(
@@ -1031,6 +1031,7 @@ if content_mode == "📰 뉴스·시사 콘텐츠":
                 result.get("naver_blog", result.get("blog", "")),
                 result.get("hook_lines", []),
             )
+            result['_image_context'] = {'topic': topic.strip(), 'title': blog_title.strip(), 'review_model': model}
             st.session_state.result=result
             st.session_state.custom_labels={re.sub(r"[^0-9A-Za-z가-힣]+","_",x).strip("_").lower():x for x in custom_list}
             st.success("기사 생성 완료")
@@ -1297,6 +1298,7 @@ JSON 객체 하나만 반환하세요:
                 life_result.get("naver_blog", ""),
                 life_result.get("hook_lines", []),
             )
+            life_result['_image_context'] = {'topic': (life_topic or f'{life_category} {life_subtopic}').strip(), 'title': life_title.strip(), 'review_model': model}
             st.session_state.life_result = life_result
             st.success("중년 남성 라이프 콘텐츠 생성 완료")
             st.session_state.pop("life_article_images", None)
