@@ -5,11 +5,11 @@ import streamlit as st
 import streamlit.components.v1 as components
 from openai import OpenAI
 from article_images import start_article_images, render_article_images
-from article_layout import render_inline_article
+from article_images import prepare_article
 
 st.set_page_config(page_title="AI 콘텐츠 스튜디오 V2.2", page_icon="📰", layout="wide")
 st.title("📰 AI 콘텐츠 스튜디오 V2.2")
-st.caption("뉴스·시사 기사와 중년 남성 라이프 콘텐츠를 네이버/구글용으로 각각 생성하고, 갈맬 4컷 만화 스토리와 이미지를 함께 만들 수 있습니다.")
+st.caption("뉴스·시사 기사와 중년 남성 라이프 콘텐츠를 네이버/구글용으로 각각 생성하고, 갈맬 4컷 만화 스토리와 이미지 요청문을 만들 수 있습니다.")
 
 # API 키는 Streamlit Cloud Secrets에서 우선 읽습니다.
 # Secrets에 키가 있으면 화면에 API 입력창을 표시하지 않습니다.
@@ -33,13 +33,14 @@ with st.sidebar:
 
 
 with st.sidebar:
-    st.subheader("🖼️ 글과 함께 이미지 만들기")
-    auto_article_images = st.checkbox("기사 작성 후 이미지 자동 생성", value=True)
-    article_image_count = st.selectbox("이미지 수", [8, 7], help="썸네일 포함 총 7~8장. 본문에 자동 배치합니다.")
-    article_image_quality_label = st.selectbox("이미지 품질", ["보통", "빠른 초안", "높음"])
-    article_image_quality = {"보통":"medium", "빠른 초안":"low", "높음":"high"}[article_image_quality_label]
+    st.subheader("🖼️ 이미지 요청문 설정")
+    auto_article_images = False
+    article_image_count = st.selectbox("이미지 요청문 개수", list(range(3, 9)), index=5,
+        help="썸네일 1장 포함 총 3~8장. 개수를 바꾸면 요청문 목록에 바로 반영됩니다.")
+    article_image_quality = "medium"
     article_image_guidance = st.text_area("이미지 요청 (선택)", placeholder="예: 유럽 중년 남성, 가을 거리, 자연스러운 코디")
-    st.caption("일반 기사·라이프 글에 적용됩니다. 글 1건에 이미지 생성과 주제 일치 확인을 각 최대 7~8회 요청합니다. 일치 확인에 실패하면 중단합니다. 이미지 API 비용이 추가되며 ChatGPT 구독과 별도입니다. 시간별 초안과 4컷 만화는 기존 설정을 따릅니다.")
+    st.caption("본문에는 이미지를 넣지 않습니다. 번호별 요청문을 복사해 ChatGPT에서 직접 생성하세요. 이미지 API를 호출하지 않습니다. 기사·만화 스토리 작성 API 비용은 기존과 같습니다.")
+
 
 
 content_mode = st.radio(
@@ -187,6 +188,11 @@ def markdown_to_naver_html(markdown_text: str) -> str:
 
         if not line:
             out.append('<p style="margin:8px 0;"><br></p>')
+            i += 1
+            continue
+
+        if line.startswith("> "):
+            out.append('<blockquote style="border-left:4px solid #7b8794;padding:12px 18px;margin:20px 0;background:#f6f8fa;line-height:1.8;">' + _inline_md_to_html(line[2:]) + '</blockquote>')
             i += 1
             continue
 
@@ -566,25 +572,6 @@ def _build_galmael_image_prompt(story: dict, style_name: str) -> str:
 """
 
 
-def _generate_image_bytes(client, prompt_text):
-    """OpenAI Images API 결과를 PNG/JPEG bytes로 반환하는 공통 이미지 생성 함수."""
-    img = client.images.generate(
-        model="gpt-image-2",
-        prompt=prompt_text,
-        size="1536x1024",
-        quality="medium",
-    )
-    item = img.data[0]
-    b64 = getattr(item, "b64_json", None)
-    if b64:
-        return base64.b64decode(b64)
-    url = getattr(item, "url", None)
-    if url:
-        with urllib.request.urlopen(url, timeout=30) as response:
-            return response.read()
-    raise ValueError("이미지 결과에서 저장 가능한 데이터를 찾지 못했습니다.")
-
-
 def render_cartoon_section(state_prefix: str, article_title: str, article_body: str, mode_label: str, default_tone: str = "일상 공감형"):
     if not article_title and not article_body:
         st.info("먼저 본문을 생성한 뒤 4컷 만화를 만들 수 있습니다.")
@@ -597,7 +584,7 @@ def render_cartoon_section(state_prefix: str, article_title: str, article_body: 
     with st.expander("🗞️ 갈맬 4컷 만화 만들기", expanded=False):
         st.caption(
             "1) 스토리 초안 생성 → 2) 아래 편집창에서 직접 수정 → "
-            "3) 수정 내용 저장 → 4) 저장된 수정본으로 만화 이미지 생성"
+            "3) 수정 내용 저장 → 4) 저장된 수정본의 만화 요청문 복사"
         )
 
         c1, c2 = st.columns(2)
@@ -747,7 +734,7 @@ def render_cartoon_section(state_prefix: str, article_title: str, article_body: 
                 }
                 st.session_state.pop(image_key, None)
                 story = st.session_state[story_key]
-                st.success("수정한 4컷 스토리를 저장했습니다. 이제 이 수정본으로 이미지를 만들 수 있습니다.")
+                st.success("수정한 4컷 스토리를 저장했습니다. 이제 아래에서 수정본의 이미지 요청문을 복사할 수 있습니다.")
 
             st.markdown("### ✅ 현재 저장된 스토리")
             st.code(_story_to_text(st.session_state[story_key]), language=None)
@@ -761,37 +748,13 @@ def render_cartoon_section(state_prefix: str, article_title: str, article_body: 
                 use_container_width=True,
             )
 
-            if st.button(
-                "🎨 수정된 스토리로 4컷 만화 이미지 만들기",
-                key=f"{state_prefix}_image_btn",
-                use_container_width=True,
-                type="primary",
-            ):
-                if not api_key.strip():
-                    st.error("OPENAI_API_KEY를 확인해주세요.")
-                else:
-                    try:
-                        client = OpenAI(api_key=api_key.strip())
-                        saved_story = st.session_state.get(story_key, {})
-                        image_prompt = _build_galmael_image_prompt(saved_story, style_name)
-                        with st.spinner("수정한 스토리를 기준으로 갈맬 4컷 만화 이미지를 생성하는 중입니다..."):
-                            st.session_state[image_key] = _generate_image_bytes(client, image_prompt)
-                        st.success("수정본 기준 4컷 만화 이미지 생성 완료")
-                    except Exception as e:
-                        st.error("이미지 생성 오류: " + str(e))
-
-        image_data = st.session_state.get(image_key)
-        if isinstance(image_data, bytes):
-            st.markdown("### 생성된 4컷 만화")
-            st.image(image_data, use_container_width=True)
-            st.download_button(
-                "⬇️ 4컷 만화 PNG 저장",
-                image_data,
-                file_name=f"{state_prefix}_galmael_comic.png",
-                mime="image/png",
-                key=f"{state_prefix}_comic_png",
-                use_container_width=True,
-            )
+            st.markdown("### 🎨 ChatGPT용 갈맬 4컷 만화 요청문")
+            comic_prompt = _build_galmael_image_prompt(st.session_state[story_key], style_name)
+            st.code(comic_prompt, language=None)
+            st.caption("요청문을 복사해 ChatGPT에 붙여 넣으세요. 저장한 스토리를 수정하면 요청문도 바뀝니다.")
+            st.download_button("⬇️ 만화 요청문 TXT 저장", comic_prompt,
+                file_name=f"{state_prefix}_comic_prompt.txt", mime="text/plain",
+                key=f"{state_prefix}_comic_prompt_download")
 
 if content_mode == "📰 뉴스·시사 콘텐츠":
     if st.button("🚀 AI 기사 새로 생성", type="primary", use_container_width=True):
@@ -883,6 +846,8 @@ if content_mode == "📰 뉴스·시사 콘텐츠":
     - faq_titles: 검색 의도형 FAQ 질문 3~5개 배열
 
     [기타 결과 필드]
+    - pull_quotes: 본문에서 핵심을 요약한 서로 다른 문장 정확히 2개. 실제 인물의 발언으로 꾸미거나 출처를 붙이지 않는다. 본문에는 직접 삽입하지 않는다. 앱이 편집 요약 인용문으로 삽입한다.
+    - 본문에는 이미지나 이미지 요청문을 삽입하지 않는다.
     - hook_lines: 본문 맨 앞에 표시할 호기심 유도 문구 2~3개 배열. 각 문구는 짧고 서로 다른 관점을 던지며 과장하지 않는다.
     - thumbnail: 썸네일에 넣을 짧고 강한 문구 5개 배열. 기사 사실을 과장하거나 단정하지 않는다.
     - thumbnail_criteria: 썸네일 제작 기준 JSON 객체. 반드시 main_subject, expression_pose, background, composition, text_layout, visual_tone, avoid 필드를 포함한다.
@@ -965,7 +930,7 @@ if content_mode == "📰 뉴스·시사 콘텐츠":
                 repaired_raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", rr.output_text.strip(), flags=re.I)
                 repaired = json.loads(repaired_raw)
                 if isinstance(repaired, dict):
-                    # 보강 결과가 일부 필드만 반환해도 기존 썸네일·해시태그·출처 등이 사라지지 않도록 병합한다.
+                    # 보강 결과가 일부 필드만 반환해도 이미지 요청문·해시태그·출처 등이 사라지지 않도록 병합한다.
                     merged_result = dict(result)
                     for rk, rv in repaired.items():
                         if rv not in (None, "", [], {}):
@@ -1032,6 +997,7 @@ if content_mode == "📰 뉴스·시사 콘텐츠":
                 result.get("hook_lines", []),
             )
             result['_image_context'] = {'topic': topic.strip(), 'title': blog_title.strip(), 'review_model': model}
+            result = prepare_article(result)
             st.session_state.result=result
             st.session_state.custom_labels={re.sub(r"[^0-9A-Za-z가-힣]+","_",x).strip("_").lower():x for x in custom_list}
             st.success("기사 생성 완료")
@@ -1050,7 +1016,7 @@ if content_mode == "📰 뉴스·시사 콘텐츠":
     if "result" in st.session_state:
         st.divider()
         st.subheader("📄 AI 생성 기사")
-        result = st.session_state.result
+        result = prepare_article(st.session_state.result)
         render_article_images("news", result, "뉴스·시사", api_key,
                               article_image_count, article_image_guidance, article_image_quality)
 
@@ -1071,7 +1037,7 @@ if content_mode == "📰 뉴스·시사 콘텐츠":
                 st.markdown("### 네이버 블로그 최종 본문")
                 display_chars = len(re.sub(r"\s+", " ", naver_plain_text(naver_text)).strip())
                 st.caption(f"본문 길이: 약 {display_chars:,}자 · 선택한 찬반/언론비교/관점분석/반론 항목은 본문에도 통합 반영됩니다.")
-                render_inline_article(naver_text, "news", result, "naver", markdown_to_naver_html)
+                st.markdown(naver_text)
                 st.caption("아래 복사 버튼은 바로 위 본문과 같은 원본을 사용합니다. 문장·표·링크·순서를 축약하거나 다시 쓰지 않습니다.")
                 naver_html = render_naver_copy_button(naver_text)
                 with st.expander("🔎 네이버 붙여넣기 미리보기", expanded=False):
@@ -1083,7 +1049,7 @@ if content_mode == "📰 뉴스·시사 콘텐츠":
         with tab_google:
             if google_text:
                 st.markdown("### 구글 블로그 최종 본문")
-                render_inline_article(google_text, "news", result, "google", markdown_to_naver_html)
+                st.markdown(google_text)
                 st.caption("아래 복사 버튼은 바로 위 구글 본문과 완전히 같은 원본을 사용하며 표시 형식만 HTML로 바꿉니다.")
                 google_html = render_google_copy_button(google_text)
                 with st.expander("🔎 구글 붙여넣기 미리보기", expanded=False):
@@ -1102,7 +1068,7 @@ if content_mode == "📰 뉴스·시사 콘텐츠":
                 st.info("구글 본문이 생성되지 않았습니다.")
 
         with tab_analysis:
-            rendered = {"naver_blog", "google_blog", "google_seo", "blog", "thumbnail", "thumbnail_criteria", "hashtags"}
+            rendered = {"naver_blog", "google_blog", "google_seo", "blog", "thumbnail", "thumbnail_criteria", "hashtags", "pull_quotes", "_image_context"}
             for k, _ in keys:
                 if k in rendered or k not in result:
                     continue
@@ -1259,7 +1225,8 @@ JSON 객체 하나만 반환하세요:
 {{
   "title_candidates": ["제목1", "제목2", "제목3", "제목4", "제목5"],
   "hook_lines": ["호기심 문구1", "호기심 문구2", "호기심 문구3"],
-  "naver_blog": "네이버 완성 본문 또는 빈 문자열",
+  "pull_quotes": ["본문에 근거한 편집 요약 문장 1", "본문에 근거한 편집 요약 문장 2"],
+      "naver_blog": "네이버 완성 본문 또는 빈 문자열",
   "google_blog": "구글 완성 본문 또는 빈 문자열",
   "google_seo": {{
     "meta_title": "",
@@ -1284,7 +1251,7 @@ JSON 객체 하나만 반환하세요:
             client = OpenAI(api_key=api_key.strip())
             kwargs = {
                 "model": model,
-                "instructions": life_system,
+                "instructions": life_system + "\n본문에 근거한 서로 다른 편집 요약 문장 정확히 2개를 pull_quotes 배열에 반드시 추가한다. 실제 인물의 발언이나 가짜 출처로 꾸미지 않는다. 본문에는 이미지를 넣지 않는다. 인용문은 앱이 별도로 삽입하므로 본문에 중복 삽입하지 않는다.",
                 "input": life_prompt,
             }
             if verify_sources or high_stakes:
@@ -1299,6 +1266,7 @@ JSON 객체 하나만 반환하세요:
                 life_result.get("hook_lines", []),
             )
             life_result['_image_context'] = {'topic': (life_topic or f'{life_category} {life_subtopic}').strip(), 'title': life_title.strip(), 'review_model': model}
+            life_result = prepare_article(life_result)
             st.session_state.life_result = life_result
             st.success("중년 남성 라이프 콘텐츠 생성 완료")
             st.session_state.pop("life_article_images", None)
@@ -1310,7 +1278,7 @@ JSON 객체 하나만 반환하세요:
             st.error("생성 오류: " + str(e))
 
     if st.session_state.get("life_result"):
-        life_result = st.session_state.life_result
+        life_result = prepare_article(st.session_state.life_result)
         render_article_images("life", life_result, "라이프", api_key,
                               article_image_count, article_image_guidance, article_image_quality)
 
@@ -1327,7 +1295,7 @@ JSON 객체 하나만 반환하세요:
         tab_n, tab_g, tab_extra = st.tabs(["🟢 네이버용", "🔵 구글용", "🎨 썸네일·태그·출처"])
         with tab_n:
             if naver_text:
-                render_inline_article(naver_text, "life", life_result, "naver", markdown_to_naver_html)
+                st.markdown(naver_text)
                 st.caption("화면 본문과 복사 버튼은 같은 원본을 사용합니다.")
                 render_naver_copy_button(naver_text)
                 st.download_button("⬇️ 네이버 라이프 본문 TXT", naver_plain_text(naver_text), "middle_age_life_naver.txt", "text/plain", key="life_naver_txt")
@@ -1336,7 +1304,7 @@ JSON 객체 하나만 반환하세요:
 
         with tab_g:
             if google_text:
-                render_inline_article(google_text, "life", life_result, "google", markdown_to_naver_html)
+                st.markdown(google_text)
                 st.caption("화면 본문과 복사 버튼은 같은 원본을 사용합니다.")
                 render_google_copy_button(google_text)
                 st.download_button("⬇️ 구글 라이프 본문 TXT", naver_plain_text(google_text), "middle_age_life_google.txt", "text/plain", key="life_google_txt")
@@ -1359,11 +1327,6 @@ JSON 객체 하나만 반환하세요:
             if thumbs:
                 st.markdown("### 썸네일 문구")
                 st.markdown("\n".join(f"- {x}" for x in thumbs))
-            image_prompt = str(life_result.get("image_prompt", "")).strip()
-            st.caption("아래는 본문 기반 일반 이미지용 정보이며, 별도로 갈맬 4컷 만화 기능도 사용할 수 있습니다.")
-            if image_prompt:
-                st.markdown("### 이미지 생성 프롬프트")
-                st.code(image_prompt, language=None)
             source_notes = life_result.get("source_notes", [])
             if source_notes:
                 st.markdown("### 출처/확인 메모")
@@ -1413,7 +1376,7 @@ if content_mode == "📰 뉴스·시사 콘텐츠":
 
     img1, img2 = st.columns([1,2])
     with img1:
-        make_hourly_images = st.checkbox("🖼️ 시간별 썸네일 이미지도 생성", value=False, help="선택하면 초안별로 이미지 API 사용량이 추가됩니다.")
+        st.caption("시간별 초안에도 선택한 개수의 이미지 요청문을 제공합니다.")
     with img2:
         image_style = st.text_input("이미지 공통 스타일", value="한국어 시사 블로그용 가로형 썸네일, 깔끔하고 신뢰감 있는 편집 디자인, 텍스트를 넣을 여백")
 
@@ -1507,7 +1470,8 @@ if content_mode == "📰 뉴스·시사 콘텐츠":
           "required_order": "해당 슬롯 필수 순서",
           "angle": "이번 초안의 구성 특징",
           "hook_lines": ["호기심 문구1", "호기심 문구2", "호기심 문구3"],
-          "naver_blog": "네이버 완성 본문 또는 빈 문자열",
+          "pull_quotes": ["본문에 근거한 편집 요약 문장 1", "본문에 근거한 편집 요약 문장 2"],
+      "naver_blog": "네이버 완성 본문 또는 빈 문자열",
           "google_blog": "구글 완성 본문 또는 빈 문자열",
           "image_prompt": "썸네일 이미지 프롬프트"
         }}
@@ -1525,7 +1489,7 @@ if content_mode == "📰 뉴스·시사 콘텐츠":
             with st.spinner(f"시간별 초안 {int(hourly_count)}개를 GPT-5.6 계열로 생성하는 중입니다..."):
                 rr = client.responses.create(
                     model=model,
-                    instructions=hourly_system,
+                    instructions=hourly_system + "\n본문에 근거한 서로 다른 편집 요약 문장 정확히 2개를 pull_quotes 배열에 반드시 추가한다. 실제 인물의 발언이나 가짜 출처로 꾸미지 않는다. 본문에는 이미지를 넣지 않는다. 인용문은 앱이 별도로 삽입하므로 본문에 중복 삽입하지 않는다.",
                     input=hourly_prompt,
                     tools=[{"type": "web_search"}]
                 )
@@ -1545,19 +1509,9 @@ if content_mode == "📰 뉴스·시사 콘텐츠":
                     draft.get("hook_lines", []),
                 )
 
-            st.session_state.hourly_drafts = drafts[:len(slot_specs)]
+            st.session_state.hourly_drafts = [prepare_article(d) for d in drafts[:len(slot_specs)]]
             st.session_state.hourly_title = hourly_title
             st.session_state.hourly_images = {}
-
-            if make_hourly_images:
-                with st.spinner("시간별 썸네일 이미지도 함께 생성하는 중입니다..."):
-                    for idx, draft in enumerate(st.session_state.hourly_drafts, start=1):
-                        p = str(draft.get("image_prompt", "")).strip() or f"{hourly_title}, {image_style}"
-                        final_prompt = f"{p}\n공통 스타일: {image_style}\n과장된 정치 선전물처럼 만들지 말고 사실 중립적인 편집 이미지로 제작."
-                        try:
-                            st.session_state.hourly_images[idx] = _generate_image_bytes(client, final_prompt)
-                        except Exception as img_e:
-                            st.session_state.hourly_images[idx] = {"error": str(img_e)}
 
             st.success(f"시간별 임시저장 초안 {len(st.session_state.hourly_drafts)}개 생성 완료")
         except Exception as e:
@@ -1565,7 +1519,7 @@ if content_mode == "📰 뉴스·시사 콘텐츠":
 
     if st.session_state.get("hourly_drafts"):
         st.markdown("### 🗂️ 시간별 임시저장 초안")
-        st.caption("표시 시간은 한국시간 기준 초안 구분용입니다. 각 시간대별 출력 순서는 앱이 고정 규칙으로 관리하며, 각 초안마다 갈맬 4컷 스토리 → 확인 → 이미지 생성이 가능합니다.")
+        st.caption("표시 시간은 한국시간 기준 초안 구분용입니다. 각 시간대별 출력 순서는 앱이 고정 규칙으로 관리하며, 각 초안마다 갈맬 4컷 스토리 → 확인 → 이미지 요청문 복사가 가능합니다.")
 
         hourly_full = []
         for i, draft in enumerate(st.session_state.hourly_drafts, start=1):
@@ -1583,7 +1537,7 @@ if content_mode == "📰 뉴스·시사 콘텐츠":
                 if angle:
                     st.caption("구성 특징: " + angle)
 
-                tn, tg, tc, ti = st.tabs(["🟢 네이버", "🔵 구글", "🗞️ 갈맬 4컷", "🖼️ 기존 이미지"])
+                tn, tg, tc, ti = st.tabs(["🟢 네이버", "🔵 구글", "🗞️ 갈맬 4컷", "🖼️ 이미지 요청문"])
                 with tn:
                     if naver_draft:
                         st.markdown(naver_draft)
@@ -1611,14 +1565,8 @@ if content_mode == "📰 뉴스·시사 콘텐츠":
                     )
 
                 with ti:
-                    image_data = st.session_state.get("hourly_images", {}).get(i)
-                    if isinstance(image_data, bytes):
-                        st.image(image_data, caption=f"{slot_time} 기존 썸네일", use_container_width=True)
-                        st.download_button(f"⬇️ 이미지 {i} PNG 저장", image_data, f"thumbnail_{i:02d}_{slot_time.replace('/', '-').replace(':','')}.png", "image/png", key=f"download_img_{i}")
-                    elif isinstance(image_data, dict) and image_data.get("error"):
-                        st.warning("이미지 생성 실패: " + image_data["error"])
-                    else:
-                        st.caption("기존 썸네일 이미지 생성 옵션을 선택하지 않았습니다. 갈맬 4컷은 왼쪽 탭에서 별도로 만들 수 있습니다.")
+                    render_article_images(f"news_hourly_{i}", draft, "뉴스·시사", api_key,
+                        article_image_count, article_image_guidance, article_image_quality)
 
             if naver_draft:
                 hourly_full.append(f"[{slot_time}] [NAVER]\n순서: {order}\n\n{naver_plain_text(naver_draft)}")
@@ -1701,11 +1649,7 @@ if content_mode == "🧔 중년 남성 라이프 콘텐츠":
 
     limg1, limg2 = st.columns([1,2])
     with limg1:
-        life_make_hourly_images = st.checkbox(
-            "🖼️ 시간별 썸네일 이미지도 생성",
-            value=False,
-            key="life_make_hourly_images"
-        )
+        st.caption("시간별 초안에도 선택한 개수의 이미지 요청문을 제공합니다.")
     with limg2:
         life_image_style = st.text_input(
             "라이프 이미지 공통 스타일",
@@ -1821,6 +1765,7 @@ JSON 객체 하나만 반환하세요:
       "required_order": "해당 시간대 구성 순서",
       "angle": "이번 시간대의 구성 특징",
       "hook_lines": ["호기심 문구1", "호기심 문구2", "호기심 문구3"],
+      "pull_quotes": ["본문에 근거한 편집 요약 문장 1", "본문에 근거한 편집 요약 문장 2"],
       "naver_blog": "네이버 완성 본문 또는 빈 문자열",
       "google_blog": "구글 완성 본문 또는 빈 문자열",
       "google_seo": {{"meta_title":"", "meta_description":"", "focus_keyword":"", "related_keywords":[], "slug":"", "faq_titles":[]}},
@@ -1840,7 +1785,7 @@ JSON 객체 하나만 반환하세요:
             client = OpenAI(api_key=api_key.strip())
             kwargs = {
                 "model": model,
-                "instructions": life_hourly_system,
+                "instructions": life_hourly_system + "\n본문에 근거한 서로 다른 편집 요약 문장 정확히 2개를 pull_quotes 배열에 반드시 추가한다. 실제 인물의 발언이나 가짜 출처로 꾸미지 않는다. 본문에는 이미지를 넣지 않는다. 인용문은 앱이 별도로 삽입하므로 본문에 중복 삽입하지 않는다.",
                 "input": life_hourly_prompt,
             }
             if verify_sources or high_stakes_hourly:
@@ -1863,19 +1808,9 @@ JSON 객체 하나만 반환하세요:
                     draft.get("hook_lines", []),
                 )
 
-            st.session_state.life_hourly_drafts = drafts[:len(life_slot_specs)]
+            st.session_state.life_hourly_drafts = [prepare_article(d) for d in drafts[:len(life_slot_specs)]]
             st.session_state.life_hourly_title_saved = fixed_title
             st.session_state.life_hourly_images = {}
-
-            if life_make_hourly_images:
-                with st.spinner("라이프 시간별 썸네일 이미지도 생성하는 중입니다..."):
-                    for idx, draft in enumerate(st.session_state.life_hourly_drafts, start=1):
-                        p = str(draft.get("image_prompt", "")).strip() or f"{fixed_title}, {life_image_style}"
-                        final_prompt = f"{p}\n공통 스타일: {life_image_style}\n한국 중년 남성의 자연스러운 생활 장면, 과장된 전후 비교나 의학적 효과 표현 금지."
-                        try:
-                            st.session_state.life_hourly_images[idx] = _generate_image_bytes(client, final_prompt)
-                        except Exception as img_e:
-                            st.session_state.life_hourly_images[idx] = {"error": str(img_e)}
 
             st.success(f"라이프 시간별 임시저장 초안 {len(st.session_state.life_hourly_drafts)}개 생성 완료")
         except Exception as e:
@@ -1902,7 +1837,7 @@ JSON 객체 하나만 반환하세요:
                 if angle:
                     st.caption("구성 특징: " + angle)
 
-                ltn, ltg, ltc, lti = st.tabs(["🟢 네이버", "🔵 구글", "🗞️ 갈맬 4컷", "🖼️ 기존 이미지"])
+                ltn, ltg, ltc, lti = st.tabs(["🟢 네이버", "🔵 구글", "🗞️ 갈맬 4컷", "🖼️ 이미지 요청문"])
                 with ltn:
                     if naver_draft:
                         st.markdown(naver_draft)
@@ -1944,18 +1879,8 @@ JSON 객체 하나만 반환하세요:
                     )
 
                 with lti:
-                    image_data = st.session_state.get("life_hourly_images", {}).get(i)
-                    if isinstance(image_data, bytes):
-                        st.image(image_data, caption=f"{slot_time} 라이프 기존 썸네일", use_container_width=True)
-                        st.download_button(
-                            f"⬇️ 라이프 이미지 {i} PNG 저장", image_data,
-                            f"life_thumbnail_{i:02d}_{slot_time.replace('/', '-').replace(':','')}.png",
-                            "image/png", key=f"life_hourly_img_{i}"
-                        )
-                    elif isinstance(image_data, dict) and image_data.get("error"):
-                        st.warning("이미지 생성 실패: " + image_data["error"])
-                    else:
-                        st.caption("기존 썸네일 이미지 생성 옵션을 선택하지 않았습니다. 갈맬 4컷은 왼쪽 탭에서 별도로 만들 수 있습니다.")
+                    render_article_images(f"life_hourly_{i}", draft, "라이프", api_key,
+                        article_image_count, article_image_guidance, article_image_quality)
 
             if naver_draft:
                 life_hourly_full.append(f"[{slot_time}] [NAVER]\n순서: {order}\n\n{naver_plain_text(naver_draft)}")
