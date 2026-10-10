@@ -15,9 +15,174 @@ import zipfile
 import re
 
 
+import html
+import ipaddress
+from urllib.parse import urlsplit
+
+
+SOURCE_LINK_RULES = """
+출처 링크는 실제 확인한 원문 상세 URL만 사용한다. #, 빈 주소, Blogger 편집 주소,
+도메인명만으로 만든 주소를 출처로 쓰지 않는다. 확인하지 못한 출처는 '확인 필요'로
+표시하고 URL을 추측하지 않는다. 웹 검색을 사용해도 해당 URL이 주장을 뒷받침하는지
+별도로 판단한다. 출처의 제목과 원문 URL을 함께 적는다.
+"""
+
+
+def link_status(url):
+    """Structural validation only; never implies reachability or factual support."""
+    url = html.unescape(str(url)).strip()
+    if not url or url.startswith('#') or url.lower() in ('none', 'null', 'about:blank'):
+        return 'blocked', '빈 주소 또는 자리표시자'
+    if re.search(r'[\s<>"\x00-\x1f\x7f]', url) or '\\' in url:
+        return 'blocked', '잘못된 URL 문자'
+    try:
+        parts = urlsplit(url)
+        host = (parts.hostname or '').lower().rstrip('.')
+        port = parts.port
+        if parts.scheme not in ('http', 'https') or not host or parts.username or parts.password:
+            return 'blocked', '허용되지 않는 URL 형식'
+        if host == 'blogger.com' or host.endswith('.blogger.com'):
+            if re.search(r'/(?:blog/)?(?:post/)?(?:edit|preview)(?:/|$)', parts.path, re.I):
+                return 'blocked', 'Blogger 편집/미리보기 주소'
+        if host in ('localhost', 'example.com', 'example.org', 'example.net') or host.endswith(('.localhost', '.local', '.invalid', '.test')):
+            return 'blocked', '로컬 주소 또는 예시 도메인'
+        try:
+            if not ipaddress.ip_address(host).is_global:
+                return 'blocked', '비공개 네트워크 주소'
+        except ValueError:
+            if '.' not in host or any(not re.fullmatch(r'[A-Za-z0-9](?:[A-Za-z0-9-]*[A-Za-z0-9])?', label) for label in host.encode('idna').decode().split('.')):
+                return 'blocked', '잘못된 호스트 이름'
+        if parts.path in ('', '/') and not parts.query:
+            return 'review', '홈페이지 주소: 원문 상세 링크 확인 필요'
+        return 'unverified', '형식 검사 통과: 접속 여부·주장 근거는 미검증'
+    except (ValueError, UnicodeError):
+        return 'blocked', 'URL 해석 실패'
+
+
+def _md_link_at(text, start):
+    """Read a Markdown link with balanced URL parentheses and optional title."""
+    match = re.match(r'\[([^\]\n]+)\]\(', text[start:])
+    if not match:
+        return None
+    pos = start + match.end()
+    begin = pos
+    depth = 1
+    while pos < len(text) and text[pos] != '\n':
+        char = text[pos]
+        if char == '\\':
+            pos += 2
+            continue
+        if char == '(':
+            depth += 1
+        elif char == ')':
+            depth -= 1
+            if depth == 0:
+                destination = text[begin:pos].strip()
+                destination = re.sub(r'\s+["\'].*["\']$', '', destination)
+                if destination.startswith('<') and destination.endswith('>'):
+                    destination = destination[1:-1]
+                return pos + 1, match.group(1), destination
+        pos += 1
+    return None
+
+
+def sanitize_result_links(result):
+    report = []
+    seen = set()
+
+    def record(path, url):
+        status, reason = link_status(url)
+        identity = (path, url)
+        if identity not in seen:
+            seen.add(identity)
+            report.append(dict(field=path, url=url, status=status, reason=reason))
+        return status
+
+    def clean(value, path):
+        if isinstance(value, dict):
+            return {k: clean(v, path + '.' + str(k)) for k, v in value.items() if not str(k).startswith('_link_')}
+        if isinstance(value, list):
+            return [clean(v, f'{path}[{i}]') for i, v in enumerate(value)]
+        if not isinstance(value, str):
+            return value
+        if value == '출처 URL 확인 필요':
+            return value
+        if re.search(r'(?:^|\.)(?:url|href|source_url|link|citation_url)$', path, re.I):
+            if record(path, value) == 'blocked':
+                return '출처 URL 확인 필요'
+        # Handle existing HTML links, including placeholder anchors.
+        def anchor(m):
+            url = html.unescape(m.group(2))
+            if record(path, url) == 'blocked':
+                return re.sub(r'<[^>]+>', '', m.group(3)) + ' (출처 URL 확인 필요)'
+            return m.group(0)
+        value = re.sub(r'<a\b[^>]*\bhref\s*=\s*(["\'])(.*?)\1[^>]*>(.*?)</a\s*>', anchor, value, flags=re.I | re.S)
+        out = []
+        i = 0
+        while i < len(value):
+            link = _md_link_at(value, i) if value[i] == '[' else None
+            if link:
+                end, label, url = link
+                out.append(label + ' (출처 URL 확인 필요)' if record(path, url) == 'blocked' else value[i:end])
+                i = end
+            else:
+                out.append(value[i])
+                i += 1
+        value = ''.join(out)
+        def bare(m):
+            token = m.group(0)
+            url = token.rstrip('.,;:!?。)]}')
+            suffix = token[len(url):]
+            return ('[URL 확인 필요]' if record(path, url) == 'blocked' else url) + suffix
+        return re.sub(r'https?://[^\s<>"\']+', bare, value)
+
+    cleaned = {k: clean(v, str(k)) for k, v in result.items() if not k.startswith('_link_')}
+    # Keep findings about removed placeholders across repeated rendering.
+    previous = result.get('_link_report', [])
+    for row in previous if isinstance(previous, list) else []:
+        if isinstance(row, dict) and row.get('status') == 'blocked' and (row.get('field'), row.get('url')) not in seen:
+            report.append(row)
+    cleaned['_link_report'] = sorted(report, key=lambda row: (row.get('field', ''), row.get('url', '')))
+    return cleaned
+
+
+def render_link_report(prefix, result):
+    rows = result.get('_link_report', [])
+    with st.expander('🔗 출처·링크 검토 보고서', expanded=any(r.get('status') == 'blocked' for r in rows)):
+        st.caption('URL 형식 검사입니다. 서버 접속이나 원문의 주장 뒷받침 여부를 확인한 결과가 아닙니다. 잘못된 주소를 추측하여 대체하지 않습니다.')
+        if rows:
+            st.dataframe(rows, use_container_width=True)
+        else:
+            st.info('검사할 URL이 없습니다. 출처가 검증되었다는 뜻은 아닙니다.')
+        st.download_button('링크 보고서 JSON 저장', json.dumps(rows, ensure_ascii=False, indent=2),
+                           file_name=f'{prefix}_link_report.json', mime='application/json', key=f'{prefix}_link_report_download')
+
+
+def _safe_quote_boundaries(blocks):
+    """Use only top-level section boundaries, before FAQ/reference sections."""
+    safe = []
+    fenced = False
+    for i, block in enumerate(blocks):
+        lines = block.splitlines()
+        was_fenced = fenced
+        for line in lines:
+            if re.match(r'^\s*(`{3,}|~{3,})', line):
+                fenced = not fenced
+        if was_fenced or fenced:
+            continue
+        heading = re.match(r'^(#{1,6})\s+(.+)$', lines[0])
+        if heading and re.search(r'FAQ|자주\s*묻|질문|출처|참고|references', heading.group(2), re.I):
+            break
+        if i > 0 and heading and len(heading.group(1)) <= 2 and not re.match(r'\s*\d+[.)]', heading.group(2)):
+            safe.append(i)
+    return safe
+
+
+
+
 def prepare_article(result):
     """Add two clearly labelled editorial pull quotes, without inventing attribution."""
-    result = dict(result)
+    result = sanitize_result_links(dict(result))
     provided = result.get('pull_quotes', [])
     if not isinstance(provided, list):
         provided = []
@@ -26,7 +191,7 @@ def prepare_article(result):
         if not isinstance(body, str) or not body.strip():
             continue
         # Remove only this application's own old insertions before rebuilding.
-        body = re.sub(r'^> \*\*편집 요약\*\* — .*\n?', '', body, flags=re.M)
+        body = re.sub(r'^>\s*\*\*편집 요약\*\*\s*[—–-]\s*.*\n?', '', body, flags=re.M)
         body = re.sub(r'!\[[^\]]*\]\([^\n]*?\)', '', body)
         body = re.sub(r'<img\b[^>]*>', '', body, flags=re.I)
         candidates = []
@@ -46,9 +211,16 @@ def prepare_article(result):
             if len(quotes) == 2:
                 break
         blocks = [b.strip() for b in re.split(r'\n\s*\n', body) if b.strip()]
-        # Insert only between paragraphs, never into a Markdown table/list.
-        for index, quote in reversed(list(enumerate(quotes))):
-            at = max(1, (index + 1) * len(blocks) // 3)
+        # Fewer quotes are preferable to interrupting a numbered section or FAQ.
+        safe = _safe_quote_boundaries(blocks)
+        selected = []
+        for index, quote in enumerate(quotes):
+            available = [p for p in safe if p not in [x[0] for x in selected]]
+            if not available:
+                break
+            target = (index + 1) * len(blocks) / 3
+            selected.append((min(available, key=lambda p: abs(p - target)), quote))
+        for at, quote in sorted(selected, reverse=True):
             blocks.insert(at, '> **편집 요약** — ' + quote)
         result[key] = '\n\n'.join(blocks)
     return result
@@ -61,6 +233,7 @@ def start_article_images(*args, **kwargs):
 
 def render_article_images(prefix, result, mode, api_key, count, guidance, quality):
     import streamlit as st
+    render_link_report(prefix, result)
     st.subheader(f'🖼️ 이미지 요청문 {count}개 · 본문과 별도')
     st.caption('각 요청문 오른쪽 위 복사 아이콘으로 복사해 ChatGPT에 하나씩 붙여 넣으세요. 실제 이미지는 이 앱에서 생성하지 않습니다.')
     try:
@@ -291,28 +464,65 @@ else:
 # 외부 markdown 패키지 없이 동작하도록 앱 내부에서 처리합니다.
 # ---------------------------------------------------------
 def _inline_md_to_html(text: str) -> str:
-    import html
+    """Emit HTML once; generated anchors are never scanned for URLs again."""
+    def emphasis(value):
+        value = html.escape(value, quote=False)
+        value = re.sub(r'\*\*(.+?)\*\*|__(.+?)__', lambda m: '<strong>' + (m.group(1) or m.group(2)) + '</strong>', value)
+        return value
 
-    text = html.escape(str(text), quote=False)
+    def anchor(label, url):
+        url = html.unescape(url)
+        if link_status(url)[0] == 'blocked':
+            return emphasis(label) + ' (출처 URL 확인 필요)'
+        return '<a href="' + html.escape(url, quote=True) + '">' + emphasis(label) + '</a>'
 
-    # Markdown 링크: [표시문자](https://주소)
-    text = re.sub(
-        r"\[([^\]]+)\]\((https?://[^\s)]+)\)",
-        lambda m: f'<a href="{html.escape(m.group(2), quote=True)}">{m.group(1)}</a>',
-        text,
-    )
-
-    # 링크 밖의 일반 URL도 클릭 가능하게 변환
-    text = re.sub(
-        r'(?<![=\"\'/>])(https?://[^\s<]+)',
-        lambda m: f'<a href="{html.escape(m.group(1), quote=True)}">{m.group(1)}</a>',
-        text,
-    )
-
-    # 기본 Markdown 강조
-    text = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", text)
-    text = re.sub(r"__(.+?)__", r"<strong>\1</strong>", text)
-    return text
+    text = str(text)
+    out = []
+    plain = []
+    def flush():
+        if plain:
+            out.append(emphasis(''.join(plain)))
+            plain.clear()
+    i = 0
+    while i < len(text):
+        existing = re.match(r'<a\b[^>]*\bhref\s*=\s*(["\'])(.*?)\1[^>]*>(.*?)</a\s*>', text[i:], re.I | re.S)
+        if existing:
+            flush()
+            out.append(anchor(html.unescape(re.sub(r'<[^>]+>', '', existing.group(3))), existing.group(2)))
+            i += existing.end()
+            continue
+        if text[i] == '`':
+            code = re.match(r'(`+)(.*?)\1', text[i:])
+            if code:
+                flush()
+                out.append('<code>' + html.escape(code.group(2), quote=False) + '</code>')
+                i += code.end()
+                continue
+        link = _md_link_at(text, i) if text[i] == '[' else None
+        if link:
+            flush()
+            end, label, url = link
+            out.append(anchor(label, url))
+            i = end
+            continue
+        auto = re.match(r'<(https?://[^<>\s]+)>', text[i:])
+        bare = re.match(r'https?://[^\s<>"\']+', text[i:])
+        if auto or bare:
+            flush()
+            token = (auto or bare).group(0)
+            url = auto.group(1) if auto else token.rstrip('.,;:!?。')
+            if not auto:
+                while url.endswith(')') and url.count(')') > url.count('('):
+                    url = url[:-1]
+            out.append(anchor(url, url))
+            if not auto:
+                out.append(html.escape(token[len(url):], quote=False))
+            i += len(token)
+            continue
+        plain.append(text[i])
+        i += 1
+    flush()
+    return ''.join(out)
 
 
 def markdown_to_naver_html(markdown_text: str) -> str:
@@ -1021,7 +1231,7 @@ if content_mode == "📰 뉴스·시사 콘텐츠":
             with st.spinner("AI가 최신 자료와 입력 내용을 바탕으로 새 기사를 생성하는 중입니다..."):
                 r=client.responses.create(
                     model=model,
-                    instructions=system,
+                    instructions=system + SOURCE_LINK_RULES,
                     input=prompt,
                     tools=[{"type":"web_search"}]
                 )
@@ -1213,7 +1423,7 @@ if content_mode == "📰 뉴스·시사 콘텐츠":
                 st.info("구글 본문이 생성되지 않았습니다.")
 
         with tab_analysis:
-            rendered = {"naver_blog", "google_blog", "google_seo", "blog", "thumbnail", "thumbnail_criteria", "hashtags", "pull_quotes", "_image_context"}
+            rendered = {"naver_blog", "google_blog", "google_seo", "blog", "thumbnail", "thumbnail_criteria", "hashtags", "pull_quotes", "_image_context", "_link_report"}
             for k, _ in keys:
                 if k in rendered or k not in result:
                     continue
@@ -1396,7 +1606,7 @@ JSON 객체 하나만 반환하세요:
             client = OpenAI(api_key=api_key.strip())
             kwargs = {
                 "model": model,
-                "instructions": life_system + "\n본문에 근거한 서로 다른 편집 요약 문장 정확히 2개를 pull_quotes 배열에 반드시 추가한다. 실제 인물의 발언이나 가짜 출처로 꾸미지 않는다. 본문에는 이미지를 넣지 않는다. 인용문은 앱이 별도로 삽입하므로 본문에 중복 삽입하지 않는다.",
+                "instructions": life_system + SOURCE_LINK_RULES + "\n본문에 근거한 서로 다른 편집 요약 문장 정확히 2개를 pull_quotes 배열에 반드시 추가한다. 실제 인물의 발언이나 가짜 출처로 꾸미지 않는다. 본문에는 이미지를 넣지 않는다. 인용문은 앱이 별도로 삽입하므로 본문에 중복 삽입하지 않는다.",
                 "input": life_prompt,
             }
             if verify_sources or high_stakes:
@@ -1634,7 +1844,7 @@ if content_mode == "📰 뉴스·시사 콘텐츠":
             with st.spinner(f"시간별 초안 {int(hourly_count)}개를 GPT-5.6 계열로 생성하는 중입니다..."):
                 rr = client.responses.create(
                     model=model,
-                    instructions=hourly_system + "\n본문에 근거한 서로 다른 편집 요약 문장 정확히 2개를 pull_quotes 배열에 반드시 추가한다. 실제 인물의 발언이나 가짜 출처로 꾸미지 않는다. 본문에는 이미지를 넣지 않는다. 인용문은 앱이 별도로 삽입하므로 본문에 중복 삽입하지 않는다.",
+                    instructions=hourly_system + SOURCE_LINK_RULES + "\n본문에 근거한 서로 다른 편집 요약 문장 정확히 2개를 pull_quotes 배열에 반드시 추가한다. 실제 인물의 발언이나 가짜 출처로 꾸미지 않는다. 본문에는 이미지를 넣지 않는다. 인용문은 앱이 별도로 삽입하므로 본문에 중복 삽입하지 않는다.",
                     input=hourly_prompt,
                     tools=[{"type": "web_search"}]
                 )
@@ -1930,7 +2140,7 @@ JSON 객체 하나만 반환하세요:
             client = OpenAI(api_key=api_key.strip())
             kwargs = {
                 "model": model,
-                "instructions": life_hourly_system + "\n본문에 근거한 서로 다른 편집 요약 문장 정확히 2개를 pull_quotes 배열에 반드시 추가한다. 실제 인물의 발언이나 가짜 출처로 꾸미지 않는다. 본문에는 이미지를 넣지 않는다. 인용문은 앱이 별도로 삽입하므로 본문에 중복 삽입하지 않는다.",
+                "instructions": life_hourly_system + SOURCE_LINK_RULES + "\n본문에 근거한 서로 다른 편집 요약 문장 정확히 2개를 pull_quotes 배열에 반드시 추가한다. 실제 인물의 발언이나 가짜 출처로 꾸미지 않는다. 본문에는 이미지를 넣지 않는다. 인용문은 앱이 별도로 삽입하므로 본문에 중복 삽입하지 않는다.",
                 "input": life_hourly_prompt,
             }
             if verify_sources or high_stakes_hourly:
