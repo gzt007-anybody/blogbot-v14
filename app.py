@@ -17,7 +17,29 @@ import re
 
 import html
 import ipaddress
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlunsplit, unquote_plus
+
+
+def remove_ai_source_tracking(url):
+    """Remove AI referral parameters while preserving source URLs and other queries."""
+    url = html.unescape(str(url))
+    try:
+        parts = urlsplit(url)
+        kept = []
+        for item in parts.query.split('&'):
+            if not item:
+                continue
+            key, _, value = item.partition('=')
+            key = unquote_plus(key).casefold()
+            value = unquote_plus(value).casefold().strip().rstrip('/')
+            if key in ('utm_source', 'utm_medium', 'utm_campaign', 'ref', 'source') and value in (
+                'openai', 'openai.com', 'chatgpt', 'chatgpt.com', 'chat.openai.com'
+            ):
+                continue
+            kept.append(item)
+        return urlunsplit(parts._replace(query='&'.join(kept)))
+    except ValueError:
+        return url
 
 
 SOURCE_LINK_RULES = """
@@ -108,14 +130,15 @@ def sanitize_result_links(result):
         if value == '출처 URL 확인 필요':
             return value
         if re.search(r'(?:^|\.)(?:url|href|source_url|link|citation_url)$', path, re.I):
+            value = remove_ai_source_tracking(value)
             if record(path, value) == 'blocked':
                 return '출처 URL 확인 필요'
         # Handle existing HTML links, including placeholder anchors.
         def anchor(m):
-            url = html.unescape(m.group(2))
+            url = remove_ai_source_tracking(m.group(2))
             if record(path, url) == 'blocked':
                 return re.sub(r'<[^>]+>', '', m.group(3)) + ' (출처 URL 확인 필요)'
-            return m.group(0)
+            return m.group(0).replace(m.group(2), html.escape(url, quote=True), 1)
         value = re.sub(r'<a\b[^>]*\bhref\s*=\s*(["\'])(.*?)\1[^>]*>(.*?)</a\s*>', anchor, value, flags=re.I | re.S)
         out = []
         i = 0
@@ -123,7 +146,8 @@ def sanitize_result_links(result):
             link = _md_link_at(value, i) if value[i] == '[' else None
             if link:
                 end, label, url = link
-                out.append(label + ' (출처 URL 확인 필요)' if record(path, url) == 'blocked' else value[i:end])
+                cleaned_url = remove_ai_source_tracking(url)
+                out.append(label + ' (출처 URL 확인 필요)' if record(path, cleaned_url) == 'blocked' else value[i:end].replace(url, cleaned_url, 1))
                 i = end
             else:
                 out.append(value[i])
@@ -133,6 +157,7 @@ def sanitize_result_links(result):
             token = m.group(0)
             url = token.rstrip('.,;:!?。)]}')
             suffix = token[len(url):]
+            url = remove_ai_source_tracking(url)
             return ('[URL 확인 필요]' if record(path, url) == 'blocked' else url) + suffix
         return re.sub(r'https?://[^\s<>"\']+', bare, value)
 
